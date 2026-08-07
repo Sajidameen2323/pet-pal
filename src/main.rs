@@ -337,6 +337,7 @@ impl App {
                 asleep: self.pet.is_sleeping(),
                 scale: self.cfg.scale,
                 roam: self.cfg.roam,
+                sleep_after_idle_secs: self.cfg.sleep_after_idle_secs,
                 sprites: self.sprite_choices(),
                 sprite: self.cfg.sprite.clone(),
             };
@@ -423,10 +424,22 @@ impl App {
                     None => save = false,
                 }
             }
-            n if n >= CMD_ROAM_BASE => {
+            n if (CMD_ROAM_BASE..CMD_SLEEP_BASE).contains(&n) => {
                 let i = (n - CMD_ROAM_BASE) as usize;
                 match tray::ROAM_PRESETS.get(i) {
                     Some((_, value)) => self.cfg.roam = *value,
+                    None => save = false,
+                }
+            }
+            n if n >= CMD_SLEEP_BASE => {
+                let i = (n - CMD_SLEEP_BASE) as usize;
+                match tray::SLEEP_PRESETS.get(i) {
+                    Some((_, secs)) => {
+                        self.cfg.sleep_after_idle_secs = *secs;
+                        // Choosing a timer implies wanting the timer, not the
+                        // nap you asked for a moment ago.
+                        self.pet.wake();
+                    }
                     None => save = false,
                 }
             }

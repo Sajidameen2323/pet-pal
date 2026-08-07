@@ -42,6 +42,20 @@ impl Ledge {
     }
 }
 
+/// A vertical window edge the creature can climb.
+///
+/// Jumping cannot bridge the gap between a taskbar and the title bar of a
+/// large window — that is routinely 700px or more, which no believable leap
+/// covers. Climbing an edge is how a desktop pet actually gets up there.
+#[derive(Clone, Copy, Debug)]
+pub struct Wall {
+    pub x: i32,
+    pub y_top: i32,
+    pub y_bottom: i32,
+    /// Which way the window lies: +1 when this is its left edge, -1 its right.
+    pub inward: i32,
+}
+
 #[derive(Clone, Copy)]
 pub struct Monitor {
     pub rect: RECT,
@@ -61,6 +75,7 @@ const MIN_WINDOW_H: i32 = 80;
 pub struct World {
     pub monitors: Vec<Monitor>,
     pub ledges: Vec<Ledge>,
+    pub walls: Vec<Wall>,
     next_scan_ms: u64,
     next_monitor_scan_ms: u64,
     self_hwnd: HWND,
@@ -72,6 +87,7 @@ struct ScanCtx {
     /// Window rects already seen, i.e. those stacked *above* the current one.
     occluders: Vec<RECT>,
     ledges: Vec<Ledge>,
+    walls: Vec<Wall>,
     /// Reused interval buffers for the occlusion subtraction.
     segs: Vec<(i32, i32)>,
     next: Vec<(i32, i32)>,
@@ -82,6 +98,7 @@ impl World {
         let mut w = World {
             monitors: Vec::new(),
             ledges: Vec::new(),
+            walls: Vec::new(),
             next_scan_ms: 0,
             next_monitor_scan_ms: 0,
             self_hwnd,
@@ -110,6 +127,7 @@ impl World {
         World {
             monitors,
             ledges,
+            walls: Vec::new(),
             next_scan_ms: u64::MAX,
             next_monitor_scan_ms: u64::MAX,
             self_hwnd: null_mut(),
@@ -120,6 +138,7 @@ impl World {
     /// turns window-walking off so the pet falls back to the desktop.
     pub fn floors_only(&mut self) {
         self.ledges.clear();
+        self.walls.clear();
         self.push_floors();
     }
 
@@ -169,6 +188,7 @@ impl World {
             self_hwnd: self.self_hwnd,
             occluders: Vec::with_capacity(MAX_WINDOWS),
             ledges: Vec::with_capacity(MAX_LEDGES),
+            walls: Vec::with_capacity(MAX_LEDGES),
             segs: Vec::with_capacity(8),
             next: Vec::with_capacity(8),
         };
@@ -185,6 +205,8 @@ impl World {
 
         self.ledges.clear();
         self.ledges.append(&mut ctx.ledges);
+        self.walls.clear();
+        self.walls.append(&mut ctx.walls);
         self.push_floors();
     }
 
@@ -239,6 +261,33 @@ impl World {
         self.ledges
             .iter()
             .any(|l| l.y > y + 24 && (x.clamp(l.x0, l.x1) - x).abs() <= max_dx)
+    }
+
+    /// A climbable edge near `(x, y)` that leads meaningfully higher.
+    ///
+    /// `min_gain` keeps it from grabbing an edge whose top is barely above the
+    /// creature, which would be a jump, not a climb.
+    pub fn wall_near(&self, x: i32, y: i32, max_dx: i32, min_gain: i32) -> Option<Wall> {
+        self.walls
+            .iter()
+            .filter(|w| {
+                (w.x - x).abs() <= max_dx
+                    && w.y_top <= y - min_gain
+                    // The edge has to reach down to where the creature is
+                    // standing, or there is nothing to take hold of.
+                    && w.y_bottom >= y - 8
+            })
+            // Nearest first, so it does not cross the screen past a usable edge.
+            .min_by_key(|w| (w.x - x).abs())
+            .copied()
+    }
+
+    /// Is this edge still there? Windows move and close mid-climb.
+    pub fn wall_at(&self, x: i32, y: i32) -> Option<Wall> {
+        self.walls
+            .iter()
+            .find(|w| (w.x - x).abs() <= 6 && w.y_top <= y && w.y_bottom >= y - 8)
+            .copied()
     }
 
     /// A ledge below `(x, y)` that the creature could deliberately hop down to.
@@ -394,6 +443,14 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         if b - a >= MIN_LEDGE_WIDTH && ctx.ledges.len() < MAX_LEDGES {
             ctx.ledges.push(Ledge { x0: a, x1: b, y });
         }
+    }
+
+    // Both vertical edges are climbable. They are not occlusion-clipped: a
+    // partly covered edge is still something to scale, and the creature draws
+    // on top of everything anyway.
+    if ctx.walls.len() + 2 <= MAX_LEDGES {
+        ctx.walls.push(Wall { x: rc.left, y_top: rc.top, y_bottom: rc.bottom, inward: 1 });
+        ctx.walls.push(Wall { x: rc.right, y_top: rc.top, y_bottom: rc.bottom, inward: -1 });
     }
 
     ctx.occluders.push(rc);
@@ -594,6 +651,7 @@ mod tests {
                 Ledge { x0: 100, x1: 400, y: 700 },  // a window near us
                 Ledge { x0: 800, x1: 900, y: 300 },  // far away and high
             ],
+            walls: Vec::new(),
             next_scan_ms: 0,
             next_monitor_scan_ms: 0,
             self_hwnd: std::ptr::null_mut(),

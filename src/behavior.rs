@@ -5,7 +5,7 @@
 //! the cursor, which beats idle wandering — so behaviours can never fight.
 
 use crate::config::Config;
-use crate::platforms::{Ledge, World};
+use crate::platforms::{Ledge, Wall, World};
 use crate::sprites::{Anim, SpriteSet};
 use crate::win::Rng;
 
@@ -20,6 +20,8 @@ pub enum State {
     Drag,
     Alert,
     Sit,
+    /// Scaling the vertical edge of a window.
+    Climb,
 }
 
 impl State {
@@ -34,6 +36,9 @@ impl State {
             State::Drag => Anim::Drag,
             State::Alert => Anim::Alert,
             State::Sit => Anim::Sit,
+            // No dedicated climb art: the walk cycle's moving legs read fine
+            // against a vertical edge, and every custom sheet already has one.
+            State::Climb => Anim::Walk,
         }
     }
 }
@@ -70,10 +75,22 @@ const JUMP_DRAG_BIAS: f32 = 1.35;
 const SPRINT_MIN_RUN: i32 = 220;
 /// How far the creature will deliberately drop to reach a lower surface.
 /// Further than this and it walks to an edge and falls instead.
-const HOP_MAX_DROP: i32 = 420;
+const HOP_MAX_DROP: i32 = 900;
 /// A hop down only needs to clear the lip of the current ledge, not gain
 /// height, so it pops up far less than a jump.
 const HOP_DOWN_CLEARANCE: f32 = 18.0;
+/// How fast the creature scales a window edge, px/s.
+const CLIMB_SPEED: f32 = 165.0;
+/// How far it will walk sideways to reach an edge worth climbing.
+const CLIMB_SEEK_DX: i32 = 500;
+/// Close enough to take hold of the edge.
+const CLIMB_GRAB_DX: i32 = 14;
+/// An edge has to lead at least this much higher to be worth climbing rather
+/// than jumping.
+const CLIMB_MIN_GAIN: i32 = 90;
+/// Give up on a climb that is taking absurdly long — the window moved, or the
+/// geometry changed under us.
+const CLIMB_TIMEOUT_MS: u32 = 20_000;
 /// Minimum gap between jump attempts. Without it a pet that keeps missing the
 /// same ledge retries every tick and looks frantic.
 const JUMP_COOLDOWN_MS: u32 = 1_100;
@@ -123,6 +140,8 @@ pub struct Pet {
     dive: bool,
     /// Counts down after a jump; blocks the next attempt until it expires.
     jump_cooldown: u32,
+    /// The edge currently being scaled.
+    climbing: Option<Wall>,
     /// While hopping *down*, the surface it launched from must be ignored or
     /// the small upward pop lands it straight back where it started. Only
     /// ledges at or below this y count as ground until it touches down.
@@ -154,6 +173,7 @@ impl Pet {
             speed_scale: 1.0,
             dive: false,
             jump_cooldown: 0,
+            climbing: None,
             land_below: None,
             was_annoyed: false,
             forced_sleep: false,
@@ -200,6 +220,7 @@ impl Pet {
         // Physically picking it up cancels a commanded nap.
         self.forced_sleep = false;
         self.land_below = None;
+        self.climbing = None;
         self.enter(State::Drag, 0);
         self.grounded = false;
         self.ledge = None;
@@ -270,6 +291,7 @@ impl Pet {
         self.grounded = false;
         self.ledge = None;
         self.land_below = None;
+        self.climbing = None;
         self.enter(State::Fall, 0);
     }
 
@@ -291,6 +313,11 @@ impl Pet {
 
     fn physics(&mut self, dt: u32, ctx: &mut Ctx) {
         let dtf = dt as f32 / 1000.0;
+
+        if self.state == State::Climb {
+            self.climb_step(dtf, ctx);
+            return;
+        }
 
         if self.grounded {
             // The window we were standing on may have moved, closed or been
@@ -367,6 +394,7 @@ impl Pet {
         self.grounded = true;
         self.dive = false;
         self.land_below = None;
+        self.climbing = None;
         self.ledge = Some(l);
         self.enter(State::Idle, 700);
         self.confine_to_ledge();
@@ -498,9 +526,97 @@ impl Pet {
         self.enter(State::Fall, 0);
     }
 
+    /// Take hold of an edge and start going up.
+    fn start_climb(&mut self, w: Wall) {
+        self.climbing = Some(w);
+        self.x = w.x as f32;
+        // Face the window it belongs to, so it looks like it is holding on.
+        self.facing = w.inward;
+        self.vx = 0.0;
+        self.vy = 0.0;
+        self.grounded = false;
+        self.ledge = None;
+        self.enter(State::Climb, 0);
+    }
+
+    /// One tick of climbing: straight up the edge, then step onto the top.
+    fn climb_step(&mut self, dtf: f32, ctx: &mut Ctx) {
+        let Some(w) = self.climbing else {
+            self.let_go();
+            return;
+        };
+        // Windows move and close. If the edge is gone, so is the grip.
+        if self.state_ms > CLIMB_TIMEOUT_MS
+            || ctx.world.wall_at(w.x, self.y as i32).is_none()
+        {
+            self.let_go();
+            return;
+        }
+
+        self.y -= CLIMB_SPEED * dtf;
+        self.x = w.x as f32;
+
+        if self.y <= w.y_top as f32 {
+            // Over the lip and onto the top surface, a body's width inside so
+            // it is standing on the window rather than balanced on its corner.
+            self.y = w.y_top as f32;
+            self.x = (w.x + w.inward * self.margin) as f32;
+            match ctx.world.support_at(self.x as i32, self.y as i32, 8) {
+                Some(l) => {
+                    self.climbing = None;
+                    self.land_on(l);
+                }
+                // The top edge was clipped away by another window covering it.
+                None => self.let_go(),
+            }
+        }
+    }
+
+    fn let_go(&mut self) {
+        self.climbing = None;
+        self.vx = 0.0;
+        self.vy = 0.0;
+        self.grounded = false;
+        self.enter(State::Fall, 0);
+    }
+
+    /// Head for a climbable edge when nothing is within jumping reach.
+    ///
+    /// No extra state is needed to remember the intent: the walk is given
+    /// roughly the time needed to cover the distance, so when it expires the
+    /// creature is beside the edge and the next decision grabs it.
+    fn seek_climb(&mut self, ctx: &mut Ctx) -> bool {
+        if !self.grounded {
+            return false;
+        }
+        let Some(w) = ctx.world.wall_near(
+            self.x as i32,
+            self.y as i32,
+            CLIMB_SEEK_DX,
+            CLIMB_MIN_GAIN,
+        ) else {
+            return false;
+        };
+
+        let dx = w.x as f32 - self.x;
+        if dx.abs() <= CLIMB_GRAB_DX as f32 {
+            self.start_climb(w);
+            return true;
+        }
+        // Only worth walking over if it is on the surface we are standing on.
+        if !self.ledge.is_some_and(|l| l.holds(w.x)) {
+            return false;
+        }
+        self.facing = if dx < 0.0 { -1 } else { 1 };
+        let speed = (ctx.cfg.speed * self.speed_scale).max(1.0);
+        let ms = (dx.abs() / speed * 1000.0) as u32;
+        self.enter(State::Walk, ms.clamp(300, 12_000));
+        true
+    }
+
     fn think(&mut self, ctx: &mut Ctx) {
-        // Falling and being alerted run to completion.
-        if self.state == State::Fall {
+        // Falling, climbing and being alerted all run to completion.
+        if self.state == State::Fall || self.state == State::Climb {
             return;
         }
         if self.state == State::Alert {
@@ -657,7 +773,10 @@ impl Pet {
         // the desktop rather than on it, so try that first. Even a very calm
         // pet does it occasionally.
         let hop_chance = (4 + roam * 24 / 100).min(28);
-        if ctx.cfg.jump_between_windows && ctx.rng.chance(hop_chance) && self.try_hop(ctx) {
+        if ctx.cfg.jump_between_windows
+            && ctx.rng.chance(hop_chance)
+            && (self.try_hop(ctx) || self.seek_climb(ctx))
+        {
             return;
         }
 
@@ -786,7 +905,7 @@ impl Pet {
         // set `vx`, and reading velocity alone would stall the start of a step.
         if !self.grounded
             || self.vx != 0.0
-            || matches!(self.state, State::Walk | State::Run | State::Fall)
+            || matches!(self.state, State::Walk | State::Run | State::Fall | State::Climb)
         {
             return MOVE_STEP_MS;
         }
@@ -798,7 +917,7 @@ impl Pet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platforms::Monitor;
+    use crate::platforms::{Monitor, Wall};
     use crate::sprites::{self, Kind, Palette};
     use windows_sys::Win32::Foundation::RECT;
 
@@ -819,7 +938,7 @@ mod tests {
     fn grounded_pet(set: &SpriteSet, cfg: &Config) -> (Pet, Rng) {
         let mut pet = Pet::new(800.0, 900.0);
         pet.set_body_width(96, Kind::Pal.body_half_frac());
-        let mut rng = Rng::new();
+        let mut rng = Rng::with_seed(7);
         let w = world();
         for _ in 0..40 {
             let mut ctx = Ctx {
@@ -939,9 +1058,15 @@ mod tests {
 
     /// Drop a pet onto a given world and let it settle.
     fn settle_on(set: &SpriteSet, cfg: &Config, w: &World, x: f32, y: f32) -> (Pet, Rng) {
+        settle_on_seeded(set, cfg, w, x, y, 1)
+    }
+
+    fn settle_on_seeded(
+        set: &SpriteSet, cfg: &Config, w: &World, x: f32, y: f32, seed: u64,
+    ) -> (Pet, Rng) {
         let mut pet = Pet::new(x, y);
         pet.set_body_width(96, Kind::Pal.body_half_frac());
-        let mut rng = Rng::new();
+        let mut rng = Rng::with_seed(seed);
         for _ in 0..80 {
             let mut ctx = Ctx {
                 world: w,
@@ -971,11 +1096,11 @@ mod tests {
     }
 
     /// Every surface the pet stood on during a run.
-    fn levels_visited(cfg: &Config, ticks: usize) -> std::collections::BTreeSet<i32> {
+    fn levels_visited(cfg: &Config, ticks: usize, seed: u64) -> std::collections::BTreeSet<i32> {
         let set = sprites::builtin(Kind::Pal, &Palette::default());
         let w = layered_world();
         // Start on the middle ledge, so it can go either way.
-        let (mut pet, mut rng) = settle_on(&set, cfg, &w, 550.0, 650.0);
+        let (mut pet, mut rng) = settle_on_seeded(&set, cfg, &w, 550.0, 650.0, seed);
         let mut seen = std::collections::BTreeSet::new();
         for _ in 0..ticks {
             let mut ctx = Ctx {
@@ -1051,25 +1176,133 @@ mod tests {
         assert!(dist > 40.0, "barely moved sideways ({dist:.0}px) - dribbled off the edge");
     }
 
+    /// A world shaped like a real desktop: a taskbar, and a big window whose
+    /// title bar is far out of jumping reach. Measured from the reporter's
+    /// screen — work area bottom 1030, nearest window top 323.
+    fn tall_window_world() -> World {
+        let mut w = World::for_test(
+            vec![Monitor {
+                rect: RECT { left: 0, top: 0, right: 1920, bottom: 1080 },
+                work: RECT { left: 0, top: 0, right: 1920, bottom: 1030 },
+            }],
+            vec![
+                Ledge { x0: 0, x1: 1920, y: 1030 },
+                Ledge { x0: 398, x1: 1806, y: 323 },
+            ],
+        );
+        w.walls = vec![
+            Wall { x: 398, y_top: 323, y_bottom: 1030, inward: 1 },
+            Wall { x: 1806, y_top: 323, y_bottom: 1030, inward: -1 },
+        ];
+        w
+    }
+
+    /// Regression for "multiple windows on screen but the pet never jumped".
+    ///
+    /// 1030 - 323 = 707px, far beyond any believable leap, so jumping alone
+    /// leaves the creature stranded on the taskbar forever. It has to climb.
+    #[test]
+    fn climbs_to_a_window_far_above_jumping_reach() {
+        assert!(
+            707 > JUMP_MAX_RISE,
+            "this test is meaningless if the gap is jumpable"
+        );
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let cfg = roaming_config(true);
+
+        for seed in [1u64, 5, 21, 64] {
+            let w = tall_window_world();
+            let (mut pet, mut rng) =
+                settle_on_seeded(&set, &cfg, &w, 1500.0, 990.0, seed);
+            assert_eq!(pet.y as i32, 1030, "should start on the taskbar");
+
+            let mut reached_window = false;
+            let mut climbed = false;
+            for _ in 0..24_000 {
+                let mut ctx = Ctx {
+                    world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
+                    idle_ms: 0, cfg: &cfg, rng: &mut rng,
+                };
+                pet.update(25, &mut ctx, &set);
+                if pet.state == State::Climb {
+                    climbed = true;
+                }
+                if pet.grounded && pet.y as i32 == 323 {
+                    reached_window = true;
+                    break;
+                }
+            }
+            assert!(climbed, "seed {seed}: never even took hold of an edge");
+            assert!(reached_window, "seed {seed}: never got onto the window");
+        }
+    }
+
+    /// And it must come back down again rather than living up there.
+    #[test]
+    fn comes_back_down_from_a_tall_window() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let cfg = roaming_config(true);
+        let w = tall_window_world();
+        // Start already up on the window.
+        let (mut pet, mut rng) = settle_on_seeded(&set, &cfg, &w, 1000.0, 280.0, 11);
+        assert_eq!(pet.y as i32, 323);
+
+        let mut back_down = false;
+        for _ in 0..24_000 {
+            let mut ctx = Ctx {
+                world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
+                idle_ms: 0, cfg: &cfg, rng: &mut rng,
+            };
+            pet.update(25, &mut ctx, &set);
+            if pet.grounded && pet.y as i32 == 1030 {
+                back_down = true;
+                break;
+            }
+        }
+        assert!(back_down, "stayed stuck on the window");
+    }
+
+    /// Climbing is part of moving between windows, so the toggle governs it.
+    #[test]
+    fn toggle_off_prevents_climbing() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let cfg = roaming_config(false);
+        let w = tall_window_world();
+        let (mut pet, mut rng) = settle_on_seeded(&set, &cfg, &w, 1500.0, 990.0, 4);
+        for _ in 0..20_000 {
+            let mut ctx = Ctx {
+                world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
+                idle_ms: 0, cfg: &cfg, rng: &mut rng,
+            };
+            pet.update(25, &mut ctx, &set);
+            assert_ne!(pet.state, State::Climb, "climbed with the toggle off");
+            assert_eq!(pet.y as i32, 1030, "left the taskbar with the toggle off");
+        }
+    }
+
     /// It used to only ever climb — `ledge_above` was the only target, so the
     /// pet accumulated on the topmost window and stayed there.
     #[test]
     fn hops_both_up_and_down() {
-        let seen = levels_visited(&roaming_config(true), 12_000);
-        assert!(
-            seen.contains(&460),
-            "never climbed to the top ledge; visited {seen:?}"
-        );
-        assert!(
-            seen.contains(&FLOOR_Y),
-            "never came back down to the floor; visited {seen:?}"
-        );
+        // Several seeds: the behaviour is randomised, and a property that only
+        // holds for one lucky seed is not a property.
+        for seed in [1u64, 7, 13, 42, 99] {
+            let seen = levels_visited(&roaming_config(true), 16_000, seed);
+            assert!(
+                seen.contains(&460),
+                "seed {seed}: never reached the top ledge; visited {seen:?}"
+            );
+            assert!(
+                seen.contains(&FLOOR_Y),
+                "seed {seed}: never came back down; visited {seen:?}"
+            );
+        }
     }
 
     /// With the toggle off it stays put on whatever it is standing on.
     #[test]
     fn toggle_off_keeps_it_on_one_surface() {
-        let seen = levels_visited(&roaming_config(false), 12_000);
+        let seen = levels_visited(&roaming_config(false), 12_000, 3);
         assert_eq!(
             seen.len(),
             1,

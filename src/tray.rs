@@ -43,6 +43,28 @@ pub const CMD_SCALE_BASE: u32 = 200;
 pub const CMD_SPRITE_BASE: u32 = 300;
 /// Roam commands are `CMD_ROAM_BASE + i`, indexing [`ROAM_PRESETS`].
 pub const CMD_ROAM_BASE: u32 = 400;
+/// Sleep-timer commands are `CMD_SLEEP_BASE + i`, indexing [`SLEEP_PRESETS`].
+pub const CMD_SLEEP_BASE: u32 = 500;
+
+/// Idle time before the creature nods off, in seconds. "Never" is the 24 hour
+/// clamp ceiling rather than a real infinity — simpler than a special case,
+/// and nobody leaves a session running that long.
+pub const SLEEP_PRESETS: [(&str, u64); 5] = [
+    ("After 1 minute", 60),
+    ("After 3 minutes", 180),
+    ("After 10 minutes", 600),
+    ("After 30 minutes", 1800),
+    ("Never", 86_400),
+];
+
+fn nearest_sleep(secs: u64) -> usize {
+    SLEEP_PRESETS
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, (_, v))| v.abs_diff(secs))
+        .map(|(i, _)| i)
+        .unwrap_or(1)
+}
 
 /// How restless the creature is: label and the `roam` value it sets.
 /// Presets rather than a raw number, because "how often does it wander" is a
@@ -147,6 +169,8 @@ pub struct MenuState {
     pub scale: u32,
     /// Current restlessness, 0-100.
     pub roam: u8,
+    /// Current idle-before-sleep timer, in seconds.
+    pub sleep_after_idle_secs: u64,
     /// Every selectable sprite: the built-in creatures followed by any sheets
     /// installed under `<config>/sprites/`. Index + `CMD_SPRITE_BASE` is the
     /// command id, and `.1` is what gets written to `sprite` in the config.
@@ -165,7 +189,8 @@ pub fn keeps_menu_open(cmd: u32) -> bool {
         CMD_CHASE | CMD_WINDOWS | CMD_JUMP | CMD_REACT | CMD_SLEEP | CMD_WAKE | CMD_RELOAD => true,
         n if (CMD_SCALE_BASE..CMD_SCALE_BASE + 100).contains(&n) => true,
         n if (CMD_SPRITE_BASE..CMD_ROAM_BASE).contains(&n) => true,
-        n if n >= CMD_ROAM_BASE => true,
+        n if (CMD_ROAM_BASE..CMD_SLEEP_BASE).contains(&n) => true,
+        n if n >= CMD_SLEEP_BASE => true,
         _ => false,
     }
 }
@@ -223,6 +248,19 @@ pub fn show_menu(hwnd: HWND, anchor: POINT, st: &MenuState) -> u32 {
             check_item(roam_menu, CMD_ROAM_BASE + i as u32, label, i == current);
         }
         submenu(menu, roam_menu, "Roam around");
+
+        // How long it waits before nodding off.
+        let sleep_menu = CreatePopupMenu();
+        let current_sleep = nearest_sleep(st.sleep_after_idle_secs);
+        for (i, (label, _)) in SLEEP_PRESETS.iter().enumerate() {
+            check_item(
+                sleep_menu,
+                CMD_SLEEP_BASE + i as u32,
+                label,
+                i == current_sleep,
+            );
+        }
+        submenu(menu, sleep_menu, "Sleep when idle");
         sep(menu);
 
         if st.asleep {

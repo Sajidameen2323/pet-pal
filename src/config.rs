@@ -421,8 +421,9 @@ const HEADER: &str = "\
 #            in sprites\\HOW-TO-make-a-sprite.txt -- or skip all of it and use
 #            Tray > Sprite > Make a copy to edit...
 # jump_between_windows
-#          : whether it hops between surfaces on its own. Off = it stays on
-#            whatever it is standing on and just roams along it.
+#          : whether it moves between surfaces on its own -- hopping, climbing
+#            window edges, and stepping off ledges. Off = it stays on whatever
+#            it is standing on and just roams along it.
 # roam     : 0-100, how restless the creature is -- how often it wanders off
 #            on its own rather than settling. The tray's \"Roam around\" menu
 #            sets this in steps; any value in between works here.

@@ -43,7 +43,14 @@ impl Rng {
     pub fn new() -> Self {
         // Seeded off the boot clock; the low bits move fast enough to differ
         // between runs, and a fixed fallback keeps the state non-zero.
-        Rng(now_ms().wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
+        Rng::with_seed(now_ms())
+    }
+
+    /// Fixed seed, so behavioural tests are reproducible. A clock-seeded RNG
+    /// makes a randomised test flaky, which is worse than having no test.
+    pub fn with_seed(seed: u64) -> Self {
+        // The low bit keeps the state non-zero, which xorshift requires.
+        Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
     }
 
     #[inline]
