@@ -994,6 +994,63 @@ mod tests {
         seen
     }
 
+    /// Trace a leap and report apex, flight time, distance, and where it ended.
+    fn trace_leap(from_y: f32, from_x: f32, target: Ledge) -> (f32, f32, f32, i32, i32) {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let cfg = roaming_config(true);
+        let w = layered_world();
+        let (mut pet, mut rng) = settle_on(&set, &cfg, &w, from_x, from_y - 40.0);
+        let launch_y = pet.y;
+        let launch_x = pet.x;
+
+        let clearance = if target.y as f32 > pet.y {
+            HOP_DOWN_CLEARANCE
+        } else {
+            JUMP_CLEARANCE
+        };
+        pet.leap_to(target, clearance);
+
+        let (mut apex, mut ms) = (launch_y, 0u32);
+        for _ in 0..400 {
+            let mut ctx = Ctx { world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
+                                idle_ms: 0, cfg: &cfg, rng: &mut rng };
+            pet.update(16, &mut ctx, &set);
+            ms += 16;
+            apex = apex.min(pet.y);
+            if pet.grounded {
+                break;
+            }
+        }
+        (launch_y - apex, ms as f32 / 1000.0, (pet.x - launch_x).abs(),
+         pet.y as i32, pet.x as i32)
+    }
+
+    /// A leap has to actually arrive. The arc is ballistic and uncorrected, so
+    /// if the launch maths is wrong the creature simply misses and falls.
+    #[test]
+    fn leaps_land_on_their_target() {
+        // Up onto the middle ledge from the floor.
+        let up = Ledge { x0: 200, x1: 900, y: 700 };
+        let (apex, secs, dist, landed_y, landed_x) = trace_leap(960.0, 550.0, up);
+        println!("up   200px: apex {apex:.0}px  {secs:.2}s  {dist:.0}px across  -> y={landed_y} x={landed_x}");
+        assert_eq!(landed_y, 700, "should have landed on the target ledge");
+        assert!(apex > 260.0, "must clear the target, only rose {apex:.0}px");
+
+        // Down from the top ledge onto the middle one.
+        let down = Ledge { x0: 200, x1: 900, y: 700 };
+        let (apex, secs, dist, landed_y, landed_x) = trace_leap(460.0, 550.0, down);
+        println!("down 240px: apex {apex:.0}px  {secs:.2}s  {dist:.0}px across  -> y={landed_y} x={landed_x}");
+        assert_eq!(landed_y, 700, "should have dropped onto the target ledge");
+        assert!(apex < 40.0, "a hop down should barely rise, went up {apex:.0}px");
+
+        // Sideways as well as down: it must travel, not drop straight.
+        let far = Ledge { x0: 200, x1: 900, y: 700 };
+        let (_, _, dist, landed_y, _) = trace_leap(460.0, 950.0, far);
+        println!("down + across from x=950: {dist:.0}px across -> y={landed_y}");
+        assert_eq!(landed_y, 700);
+        assert!(dist > 40.0, "barely moved sideways ({dist:.0}px) - dribbled off the edge");
+    }
+
     /// It used to only ever climb — `ledge_above` was the only target, so the
     /// pet accumulated on the topmost window and stayed there.
     #[test]
