@@ -10,7 +10,20 @@ sprite sheet. No assets, no runtime, no installer: one 760 KB executable.
 
 ![the creatures](docs/creature.png)
 
-## Running it
+## Try it
+
+[**`petpal.exe`**](petpal.exe) in the repo root is a prebuilt Windows binary —
+download and double-click, nothing to install. It writes its settings to
+`%APPDATA%\PetPal\` and touches nothing else.
+
+Windows will show a **"Windows protected your PC"** box the first time, because
+the binary is unsigned: *More info* → *Run anyway*. Build it yourself if you
+would rather not take that on trust — it is one command.
+
+**To quit:** right-click the tray icon → *Exit PetPal*. Closing is the only way
+out; the creature has no window to close.
+
+## Building it
 
 ```bash
 cargo run --release
