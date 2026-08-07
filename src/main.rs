@@ -333,7 +333,7 @@ impl App {
                 chase: self.cfg.chase_cursor,
                 walk_on_windows: self.cfg.walk_on_windows,
                 react: self.cfg.react_to_new_apps,
-                asleep: self.pet.state == State::Sleep,
+                asleep: self.pet.is_sleeping(),
                 scale: self.cfg.scale,
                 roam: self.cfg.roam,
                 sprites: self.sprite_choices(),

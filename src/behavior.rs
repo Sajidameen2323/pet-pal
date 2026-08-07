@@ -119,6 +119,9 @@ pub struct Pet {
     jump_cooldown: u32,
     /// Sticky flag for the CPU hysteresis band.
     was_annoyed: bool,
+    /// Set by "Go to sleep" in the tray menu. Keeps the pet asleep regardless
+    /// of the idle timer, until something explicitly rouses it.
+    forced_sleep: bool,
 }
 
 impl Pet {
@@ -142,6 +145,7 @@ impl Pet {
             dive: false,
             jump_cooldown: 0,
             was_annoyed: false,
+            forced_sleep: false,
         }
     }
 
@@ -182,6 +186,8 @@ impl Pet {
     // -- external events ---------------------------------------------------
 
     pub fn begin_drag(&mut self) {
+        // Physically picking it up cancels a commanded nap.
+        self.forced_sleep = false;
         self.enter(State::Drag, 0);
         self.grounded = false;
         self.ledge = None;
@@ -218,17 +224,30 @@ impl Pet {
         self.enter(State::Alert, ALERT_MS);
     }
 
+    /// Send the pet to sleep on request, and keep it there.
+    ///
+    /// The flag is the whole point. Sleep is otherwise driven by the idle
+    /// timer, and choosing this menu item *is* input — so without it the next
+    /// tick sees a fresh idle time and wakes the pet straight back up.
     pub fn force_sleep(&mut self) {
+        self.forced_sleep = true;
         if self.grounded {
             self.vx = 0.0;
             self.enter(State::Sleep, 0);
         }
+        // Not grounded: the flag makes it settle down once it lands.
     }
 
     pub fn wake(&mut self) {
+        self.forced_sleep = false;
         if self.state == State::Sleep {
             self.enter(State::Idle, 900);
         }
+    }
+
+    /// Asleep, or on its way to bed because it was told to be.
+    pub fn is_sleeping(&self) -> bool {
+        self.state == State::Sleep || self.forced_sleep
     }
 
     pub fn teleport(&mut self, x: f32, y: f32) {
@@ -411,9 +430,11 @@ impl Pet {
         }
 
         let cfg = ctx.cfg;
-        let sleepy = ctx.idle_ms >= cfg.sleep_after_idle_secs.saturating_mul(1000);
+        // Either the idle timer ran out, or the user asked for it directly.
+        let sleepy = self.forced_sleep
+            || ctx.idle_ms >= cfg.sleep_after_idle_secs.saturating_mul(1000);
 
-        // Any input wakes the pet immediately.
+        // Any input wakes the pet immediately -- unless it was told to sleep.
         if self.state == State::Sleep {
             if sleepy {
                 return;
@@ -818,6 +839,81 @@ mod tests {
             }
         }
         moving as f32 / total as f32
+    }
+
+    /// Regression: "Go to sleep" used to last a single tick. Sleep is driven
+    /// by the idle timer, and choosing the menu item *is* input, so the very
+    /// next tick saw idle_ms ~ 0 and woke the pet straight back up.
+    #[test]
+    fn commanded_sleep_survives_fresh_input() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let cfg = chase_config(); // long sleep timer, so only the command applies
+        let (mut pet, mut rng) = grounded_pet(&set, &cfg);
+        let w = world();
+
+        pet.force_sleep();
+        assert_eq!(pet.state, State::Sleep, "should be asleep immediately");
+
+        // Twenty seconds of ticks with the user constantly at the keyboard.
+        for _ in 0..800 {
+            let mut ctx = Ctx {
+                world: &w,
+                cursor: (400, FLOOR_Y),
+                cpu_load: 0.0,
+                idle_ms: 0, // input every single tick
+                cfg: &cfg,
+                rng: &mut rng,
+            };
+            pet.update(25, &mut ctx, &set);
+        }
+        assert_eq!(pet.state, State::Sleep, "commanded sleep must not time out");
+        assert!(pet.is_sleeping());
+
+        // "Wake up" ends it, and it stays awake.
+        pet.wake();
+        assert_ne!(pet.state, State::Sleep);
+        assert!(!pet.is_sleeping());
+        for _ in 0..200 {
+            let mut ctx = Ctx {
+                world: &w,
+                cursor: (400, FLOOR_Y),
+                cpu_load: 0.0,
+                idle_ms: 0,
+                cfg: &cfg,
+                rng: &mut rng,
+            };
+            pet.update(25, &mut ctx, &set);
+        }
+        assert_ne!(pet.state, State::Sleep, "should not crawl back to bed");
+    }
+
+    /// Picking the pet up cancels a commanded nap.
+    #[test]
+    fn dragging_cancels_commanded_sleep() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let cfg = chase_config();
+        let (mut pet, mut rng) = grounded_pet(&set, &cfg);
+        let w = world();
+
+        pet.force_sleep();
+        assert!(pet.is_sleeping());
+        pet.begin_drag();
+        pet.drag_to(500.0, 300.0);
+        pet.end_drag();
+        assert!(!pet.is_sleeping(), "picking it up should rouse it");
+
+        for _ in 0..400 {
+            let mut ctx = Ctx {
+                world: &w,
+                cursor: (400, FLOOR_Y),
+                cpu_load: 0.0,
+                idle_ms: 0,
+                cfg: &cfg,
+                rng: &mut rng,
+            };
+            pet.update(25, &mut ctx, &set);
+        }
+        assert_ne!(pet.state, State::Sleep);
     }
 
     /// `roam` is the one dial for restlessness; the ends of its range must
