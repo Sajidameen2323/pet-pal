@@ -79,6 +79,13 @@ const HOP_MAX_DROP: i32 = 900;
 /// A hop down only needs to clear the lip of the current ledge, not gain
 /// height, so it pops up far less than a jump.
 const HOP_DOWN_CLEARANCE: f32 = 18.0;
+/// How long the creature explores a newly reached surface before it will
+/// consider moving on. Without it, landing is immediately followed by another
+/// decision, and since the direction bias favours going down when high up, a
+/// climb ends in an instant hop straight back — a pointless yo-yo.
+const SETTLE_BASE_MS: u32 = 6_000;
+/// Even the most restless creature looks at its new surroundings this long.
+const SETTLE_MIN_MS: u32 = 1_500;
 /// How fast the creature scales a window edge, px/s.
 const CLIMB_SPEED: f32 = 165.0;
 /// How far it will walk sideways to reach an edge worth climbing.
@@ -142,6 +149,8 @@ pub struct Pet {
     jump_cooldown: u32,
     /// The edge currently being scaled.
     climbing: Option<Wall>,
+    /// Time spent on the current surface since arriving on it.
+    settled_ms: u32,
     /// While hopping *down*, the surface it launched from must be ignored or
     /// the small upward pop lands it straight back where it started. Only
     /// ledges at or below this y count as ground until it touches down.
@@ -174,6 +183,7 @@ impl Pet {
             dive: false,
             jump_cooldown: 0,
             climbing: None,
+            settled_ms: 0,
             land_below: None,
             was_annoyed: false,
             forced_sleep: false,
@@ -300,6 +310,9 @@ impl Pet {
     pub fn update(&mut self, dt: u32, ctx: &mut Ctx, set: &SpriteSet) {
         self.state_ms = self.state_ms.saturating_add(dt);
         self.jump_cooldown = self.jump_cooldown.saturating_sub(dt);
+        if self.grounded {
+            self.settled_ms = self.settled_ms.saturating_add(dt);
+        }
 
         if self.state == State::Drag {
             self.animate(dt, set);
@@ -388,6 +401,8 @@ impl Pet {
     }
 
     fn land_on(&mut self, l: Ledge) {
+        // Arriving somewhere new restarts the settle clock.
+        self.settled_ms = 0;
         self.y = l.y as f32;
         self.vy = 0.0;
         self.vx = 0.0;
@@ -773,16 +788,22 @@ impl Pet {
         // the desktop rather than on it, so try that first. Even a very calm
         // pet does it occasionally.
         let hop_chance = (4 + roam * 24 / 100).min(28);
-        if ctx.cfg.jump_between_windows
-            && ctx.rng.chance(hop_chance)
-            && (self.try_hop(ctx) || self.seek_climb(ctx))
+        // Look around the new surface before planning the next move. A
+        // restless creature gets bored of it sooner.
+        let settle_needed =
+            (SETTLE_BASE_MS * (140 - roam) / 100).max(SETTLE_MIN_MS);
+        let may_leave = ctx.cfg.jump_between_windows && self.settled_ms >= settle_needed;
+
+        if may_leave && ctx.rng.chance(hop_chance) && (self.try_hop(ctx) || self.seek_climb(ctx))
         {
             return;
         }
 
-        // Walking off an edge is only on the table if it is allowed to change
-        // surfaces at all.
-        let drop_available = ctx.cfg.jump_between_windows
+        // Stepping off an edge is a way of leaving too, and has to wait out the
+        // same settle — otherwise the creature lands, idles for a moment and
+        // walks straight back off, which looks exactly like the yo-yo the hop
+        // gate was added to stop.
+        let drop_available = may_leave
             && ctx
                 .world
                 .has_ledge_below(self.x as i32, self.y as i32, JUMP_MAX_DX);
@@ -1277,6 +1298,61 @@ mod tests {
             pet.update(25, &mut ctx, &set);
             assert_ne!(pet.state, State::Climb, "climbed with the toggle off");
             assert_eq!(pet.y as i32, 1030, "left the taskbar with the toggle off");
+        }
+    }
+
+    /// How long the creature stayed put each time it arrived somewhere, in ms.
+    fn dwell_times(cfg: &Config, seed: u64) -> Vec<u32> {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let w = layered_world();
+        let (mut pet, mut rng) = settle_on_seeded(&set, cfg, &w, 550.0, 650.0, seed);
+
+        let mut dwells = Vec::new();
+        let (mut on_ground, mut since) = (true, 0u32);
+        for _ in 0..24_000 {
+            let mut ctx = Ctx {
+                world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
+                idle_ms: 0, cfg, rng: &mut rng,
+            };
+            pet.update(25, &mut ctx, &set);
+            match (on_ground, pet.grounded) {
+                (true, true) => since += 25,
+                (true, false) => {
+                    dwells.push(since);
+                    on_ground = false;
+                }
+                (false, true) => {
+                    on_ground = true;
+                    since = 0;
+                }
+                (false, false) => {}
+            }
+        }
+        dwells
+    }
+
+    /// Reported as "after jumping onto a new platform it immediately jumps
+    /// down". Landing used to be followed by a 700ms idle and then a free
+    /// decision, and the direction bias favours dropping when high up — so a
+    /// climb ended in an instant hop back and the creature yo-yoed.
+    #[test]
+    fn explores_a_new_surface_before_moving_on() {
+        // roam 100 is the most impatient setting, so the shortest settle.
+        let cfg = roaming_config(true);
+        let floor = (SETTLE_BASE_MS * (140 - 100) / 100).max(SETTLE_MIN_MS);
+
+        for seed in [1u64, 8, 23, 55] {
+            let dwells = dwell_times(&cfg, seed);
+            assert!(
+                dwells.len() >= 3,
+                "seed {seed}: barely moved, only {} departures",
+                dwells.len()
+            );
+            let shortest = *dwells.iter().min().unwrap();
+            assert!(
+                shortest + 25 >= floor,
+                "seed {seed}: left after only {shortest}ms, expected >= {floor}ms                  (all dwells: {dwells:?})"
+            );
         }
     }
 

@@ -39,6 +39,7 @@ one for the menu. Only one copy runs at a time.
 | **Walks across windows** | Top edges of visible windows become ledges, clipped against anything stacked above them — so it never stands on a title bar that is hidden behind another window. |
 | **Sits on the taskbar** | The monitor work area's bottom edge is a ledge, which is exactly the top of the taskbar when you have one. |
 | **Hops between windows** | Picks a reachable surface above *or* below and leaps for it, biased by how high it already is so it circulates instead of piling up on the topmost window. A missed leap is just a fall, and it tries again. |
+| **Settles in when it arrives** | After reaching a new surface it explores for a few seconds before considering the next move, so a climb up is not followed by an instant hop back down. Restless creatures get bored sooner: roughly 2.5 s at *Constantly*, 8 s at *Hardly ever*. |
 | **Climbs window edges** | A taskbar and a large window's title bar are routinely 700px apart — no believable jump covers that, so the creature walks to the window's side and scales it. This is what gets it off the taskbar on a real desktop. |
 | **Stays put if you prefer** | **Tray → Jump between windows** off: no hopping, no climbing, no stepping off edges. It roams along whatever surface it is on. |
 | **Sprints the whole length** | Sometimes it aims at the far end of whatever it is standing on and runs the entire way, timing the dash to the actual distance — so it crosses the full taskbar rather than twitching a few pixels. |
