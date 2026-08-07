@@ -1,0 +1,46 @@
+# Rabbit — 8 x 6 grid of 64x64 cells (48 cells, 42 drawn).
+#
+# Cells 38, 39, 42-47 are empty, so nothing may reference them: a clip pointing
+# at a blank cell renders as an invisible pet, not as an error.
+image = "creature.png"
+frame_width = 64
+frame_height = 64
+
+[anims.idle]
+frames = [0, 1, 2, 3, 4, 5, 6, 7]
+frame_ms = 200
+
+[anims.walk]
+frames = [8, 9, 10, 11, 12, 13, 14, 15]
+frame_ms = 90
+
+[anims.run]
+frames = [16, 17, 18, 19, 20, 21, 22, 23]
+frame_ms = 55
+
+[anims.fall]
+frames = [35, 36]
+frame_ms = 140
+
+[anims.sleep]
+frames = [27, 28, 29, 30, 31]
+frame_ms = 480
+
+# Second frame was 38 (empty) — using the dazed/star pose instead so the clip
+# still animates.
+[anims.annoyed]
+frames = [33, 37]
+frame_ms = 160
+
+[anims.drag]
+frames = [34]
+frame_ms = 200
+
+[anims.alert]
+frames = [32, 37]
+frame_ms = 180
+
+# The sitting pair lives on row 5 at 40/41, not 38/39.
+[anims.sit]
+frames = [40, 41]
+frame_ms = 500

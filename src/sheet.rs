@@ -300,6 +300,39 @@ mod tests {
         println!("wrote assets/petpal.ico ({} bytes)", ico.len());
     }
 
+    /// Every sheet under `assets/sprites` must load, and no clip may point at a
+    /// blank cell. A manifest that references an empty cell is not an error the
+    /// loader can catch — the pet just turns invisible for that animation, which
+    /// is exactly the bug the shipped rabbit manifest started life with.
+    #[test]
+    fn shipped_sheets_have_no_blank_frames() {
+        let root = std::path::Path::new("assets/sprites");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(root).expect("assets/sprites").flatten() {
+            let dir = entry.path();
+            if !dir.join("sprite.toml").is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let set = crate::sprites::load_sheet(&dir)
+                .unwrap_or_else(|e| panic!("{}: {e}", name.to_string_lossy()));
+            for a in Anim::ALL {
+                let clip = set.clip(a);
+                assert!(!clip.idx.is_empty(), "{name:?} {a:?} has no frames");
+                for (i, &cell) in clip.idx.iter().enumerate() {
+                    let opaque = set.frames[cell as usize]
+                        .px
+                        .iter()
+                        .filter(|&&p| p >> 24 > 24)
+                        .count();
+                    assert!(opaque > 0, "{name:?} {a:?}[{i}] is blank cell {cell}");
+                }
+            }
+            checked += 1;
+        }
+        assert!(checked > 0, "no sheets found under {}", root.display());
+    }
+
     /// An exported sheet must load back as the same animations — that round
     /// trip is the whole point of the export.
     #[test]
