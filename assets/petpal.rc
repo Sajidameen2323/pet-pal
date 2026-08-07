@@ -1,0 +1,3 @@
+// Resource id 1 is what LoadIconW(hinstance, 1) picks up at runtime, and the
+// lowest-numbered icon is the one Explorer shows for the executable.
+1 ICON "assets/petpal.ico"
