@@ -38,7 +38,7 @@ one for the menu. Only one copy runs at a time.
 |---|---|
 | **Walks across windows** | Top edges of visible windows become ledges, clipped against anything stacked above them — so it never stands on a title bar that is hidden behind another window. |
 | **Sits on the taskbar** | The monitor work area's bottom edge is a ledge, which is exactly the top of the taskbar when you have one. |
-| **Climbs** | Periodically picks a reachable ledge above and jumps for it. A missed jump is just a fall, and it tries again. |
+| **Hops between windows** | Picks a reachable surface above *or* below and leaps for it, biased by how high it already is so it circulates instead of piling up on the topmost window. A missed leap is just a fall, and it tries again. Turn it off with **Tray → Jump between windows** and it stays on whatever it is standing on. |
 | **Sprints the whole length** | Sometimes it aims at the far end of whatever it is standing on and runs the entire way, timing the dash to the actual distance — so it crosses the full taskbar rather than twitching a few pixels. |
 | **Chases the cursor** | Off by default; toggle it in the tray menu. It will hop up onto a window to reach a cursor that is above it, and step off an edge to reach one below. |
 | **Sleeps when idle** | After `sleep_after_idle_secs` with no keyboard or mouse input it walks to a wide ledge and curls up. Any input wakes it. |
@@ -145,6 +145,7 @@ speed = 46.0                   # walking speed, px/sec (running is 2.3x)
 roam = 45                      # 0-100, how restless it is
 chase_cursor = false
 walk_on_windows = true
+jump_between_windows = true    # off = stays put on one surface
 react_to_new_apps = true
 sleep_after_idle_secs = 180
 cpu_annoy_percent = 80

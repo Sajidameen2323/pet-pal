@@ -26,6 +26,7 @@ const TRAY_ID: u32 = 1;
 pub const CMD_CHASE: u32 = 100;
 pub const CMD_WINDOWS: u32 = 101;
 pub const CMD_REACT: u32 = 102;
+pub const CMD_JUMP: u32 = 113;
 pub const CMD_SLEEP: u32 = 103;
 pub const CMD_WAKE: u32 = 104;
 pub const CMD_COME: u32 = 105;
@@ -140,6 +141,7 @@ impl Drop for Tray {
 pub struct MenuState {
     pub chase: bool,
     pub walk_on_windows: bool,
+    pub jump_between_windows: bool,
     pub react: bool,
     pub asleep: bool,
     pub scale: u32,
@@ -160,7 +162,7 @@ pub struct MenuState {
 /// closes.
 pub fn keeps_menu_open(cmd: u32) -> bool {
     match cmd {
-        CMD_CHASE | CMD_WINDOWS | CMD_REACT | CMD_SLEEP | CMD_WAKE | CMD_RELOAD => true,
+        CMD_CHASE | CMD_WINDOWS | CMD_JUMP | CMD_REACT | CMD_SLEEP | CMD_WAKE | CMD_RELOAD => true,
         n if (CMD_SCALE_BASE..CMD_SCALE_BASE + 100).contains(&n) => true,
         n if (CMD_SPRITE_BASE..CMD_ROAM_BASE).contains(&n) => true,
         n if n >= CMD_ROAM_BASE => true,
@@ -184,6 +186,7 @@ pub fn show_menu(hwnd: HWND, anchor: POINT, st: &MenuState) -> u32 {
 
         check_item(menu, CMD_CHASE, "Chase the cursor", st.chase);
         check_item(menu, CMD_WINDOWS, "Walk on windows", st.walk_on_windows);
+        check_item(menu, CMD_JUMP, "Jump between windows", st.jump_between_windows);
         check_item(menu, CMD_REACT, "React to new apps", st.react);
         sep(menu);
 

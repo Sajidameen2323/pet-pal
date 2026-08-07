@@ -68,6 +68,12 @@ const JUMP_CLEARANCE: f32 = 50.0;
 const JUMP_DRAG_BIAS: f32 = 1.35;
 /// A ledge must be at least this wide before a full-length sprint is worth it.
 const SPRINT_MIN_RUN: i32 = 220;
+/// How far the creature will deliberately drop to reach a lower surface.
+/// Further than this and it walks to an edge and falls instead.
+const HOP_MAX_DROP: i32 = 420;
+/// A hop down only needs to clear the lip of the current ledge, not gain
+/// height, so it pops up far less than a jump.
+const HOP_DOWN_CLEARANCE: f32 = 18.0;
 /// Minimum gap between jump attempts. Without it a pet that keeps missing the
 /// same ledge retries every tick and looks frantic.
 const JUMP_COOLDOWN_MS: u32 = 1_100;
@@ -117,6 +123,10 @@ pub struct Pet {
     dive: bool,
     /// Counts down after a jump; blocks the next attempt until it expires.
     jump_cooldown: u32,
+    /// While hopping *down*, the surface it launched from must be ignored or
+    /// the small upward pop lands it straight back where it started. Only
+    /// ledges at or below this y count as ground until it touches down.
+    land_below: Option<i32>,
     /// Sticky flag for the CPU hysteresis band.
     was_annoyed: bool,
     /// Set by "Go to sleep" in the tray menu. Keeps the pet asleep regardless
@@ -144,6 +154,7 @@ impl Pet {
             speed_scale: 1.0,
             dive: false,
             jump_cooldown: 0,
+            land_below: None,
             was_annoyed: false,
             forced_sleep: false,
         }
@@ -188,6 +199,7 @@ impl Pet {
     pub fn begin_drag(&mut self) {
         // Physically picking it up cancels a commanded nap.
         self.forced_sleep = false;
+        self.land_below = None;
         self.enter(State::Drag, 0);
         self.grounded = false;
         self.ledge = None;
@@ -257,6 +269,7 @@ impl Pet {
         self.vy = 0.0;
         self.grounded = false;
         self.ledge = None;
+        self.land_below = None;
         self.enter(State::Fall, 0);
     }
 
@@ -322,7 +335,10 @@ impl Pet {
         if self.vy > 0.0 {
             // Swept test against the highest surface below where we started, so
             // fast falls cannot tunnel through a thin ledge.
-            if let Some(l) = ctx.world.ground_below(self.x as i32, prev_y as i32) {
+            let probe = self
+                .land_below
+                .map_or(prev_y as i32, |floor| (prev_y as i32).max(floor));
+            if let Some(l) = ctx.world.ground_below(self.x as i32, probe) {
                 if self.y >= l.y as f32 {
                     self.land_on(l);
                     return;
@@ -350,6 +366,7 @@ impl Pet {
         self.vx = 0.0;
         self.grounded = true;
         self.dive = false;
+        self.land_below = None;
         self.ledge = Some(l);
         self.enter(State::Idle, 700);
         self.confine_to_ledge();
@@ -397,21 +414,85 @@ impl Pet {
         )
     }
 
-    /// Launch toward a ledge above. Ballistic, not guided — a missed jump just
-    /// becomes a fall, and the pet tries again after the cooldown.
-    fn jump_to(&mut self, target: Ledge) {
+    /// Pick somewhere to hop, up or down, and go.
+    ///
+    /// Direction is biased by how high the creature already is: only ever
+    /// jumping up strands it on the topmost window, and only ever dropping
+    /// parks it on the taskbar. Weighting by height makes it circulate.
+    fn try_hop(&mut self, ctx: &mut Ctx) -> bool {
+        if !self.grounded || self.jump_cooldown > 0 {
+            return false;
+        }
+        let (x, y) = (self.x as i32, self.y as i32);
+        let min_w = self.margin * 2;
+        let up = ctx
+            .world
+            .ledge_above(x, y, JUMP_MAX_RISE, JUMP_MAX_DX, min_w, ctx.rng.below(64));
+        let down = ctx
+            .world
+            .ledge_below(x, y, HOP_MAX_DROP, JUMP_MAX_DX, min_w, ctx.rng.below(64));
+
+        // 0 at the top of the work area, 1 at the bottom.
+        let m = ctx.world.monitor_at(x, y);
+        let span = (m.work.bottom - m.work.top).max(1) as f32;
+        let height = ((y - m.work.top) as f32 / span).clamp(0.0, 1.0);
+        let prefer_down = (25.0 + 50.0 * (1.0 - height)) as u32;
+
+        match (up, down) {
+            (Some(u), Some(d)) => {
+                if ctx.rng.chance(prefer_down) {
+                    self.leap_to(d, HOP_DOWN_CLEARANCE);
+                } else {
+                    self.leap_to(u, JUMP_CLEARANCE);
+                }
+                true
+            }
+            (Some(u), None) => {
+                self.leap_to(u, JUMP_CLEARANCE);
+                true
+            }
+            (None, Some(d)) => {
+                self.leap_to(d, HOP_DOWN_CLEARANCE);
+                true
+            }
+            (None, None) => false,
+        }
+    }
+
+    /// Launch at a ledge, up or down. Ballistic, not guided — a missed leap is
+    /// just a fall, and the pet tries again after the cooldown.
+    ///
+    /// One arc covers both directions. Solving the full trajectory rather than
+    /// only the rise is what makes a hop *down* look deliberate: the pet pops
+    /// up by `clearance`, then travels far enough sideways during the whole
+    /// descent to actually land on the target, instead of dribbling off the
+    /// edge and dropping straight down.
+    fn leap_to(&mut self, target: Ledge, clearance: f32) {
         self.jump_cooldown = JUMP_COOLDOWN_MS;
-        let rise = (self.y - target.y as f32).max(0.0) + JUMP_CLEARANCE;
+
+        // Positive when the target is below us.
+        let drop = target.y as f32 - self.y;
+        let rise = (-drop).max(0.0) + clearance;
         let v0 = (2.0 * GRAVITY * rise).sqrt().min(TERMINAL);
+
+        // Time to reach the target height: 0.5*g*t^2 - v0*t - drop = 0.
+        let disc = (v0 * v0 + 2.0 * GRAVITY * drop).max(0.0);
+        let flight = ((v0 + disc.sqrt()) / GRAVITY).max(0.05);
+
         let landing = (self.x as i32).clamp(target.x0 + self.margin, target.x1 - self.margin);
         let dx = landing as f32 - self.x;
 
-        let time_to_apex = v0 / GRAVITY;
         self.vy = -v0;
-        self.vx = (dx / time_to_apex * JUMP_DRAG_BIAS).clamp(-520.0, 520.0);
+        self.vx = (dx / flight * JUMP_DRAG_BIAS).clamp(-520.0, 520.0);
         if dx.abs() > 1.0 {
             self.facing = if dx < 0.0 { -1 } else { 1 };
         }
+        // A hop down has to fall *through* the surface it is standing on. The
+        // small upward pop would otherwise re-satisfy the landing test against
+        // that same ledge on the way back down, and the pet would never leave.
+        // A jump up needs no such thing, and should still be able to land back
+        // here if it misjudges the leap.
+        self.land_below = (drop > 0.0).then_some(self.y as i32 + 8);
         self.grounded = false;
         self.ledge = None;
         self.enter(State::Fall, 0);
@@ -499,7 +580,7 @@ impl Pet {
                 // through to Run here is what made it wiggle: `dx` is ~0, so
                 // facing flipped on every tick.
                 if let Some(l) = self.reachable_ledge(ctx) {
-                    self.jump_to(l);
+                    self.leap_to(l, JUMP_CLEARANCE);
                 }
                 if self.state != State::Idle && self.state != State::Fall {
                     self.enter(State::Idle, 0);
@@ -516,7 +597,7 @@ impl Pet {
         // Worth moving for. Climb first if the cursor is well above us.
         if overhead > CHASE_REACH_Y {
             if let Some(l) = self.reachable_ledge(ctx) {
-                self.jump_to(l);
+                self.leap_to(l, JUMP_CLEARANCE);
                 return;
             }
         }
@@ -572,19 +653,19 @@ impl Pet {
     fn wander(&mut self, ctx: &mut Ctx) {
         let roam = ctx.cfg.roam.min(100) as u32;
 
-        // Hopping up onto a window is what makes the pet feel like it lives in
+        // Moving between surfaces is what makes the pet feel like it lives in
         // the desktop rather than on it, so try that first. Even a very calm
         // pet does it occasionally.
         let hop_chance = (4 + roam * 24 / 100).min(28);
-        if ctx.rng.chance(hop_chance) {
-            if let Some(l) = self.reachable_ledge(ctx) {
-                self.jump_to(l);
-                return;
-            }
+        if ctx.cfg.jump_between_windows && ctx.rng.chance(hop_chance) && self.try_hop(ctx) {
+            return;
         }
 
-        let drop_available =
-            ctx.world
+        // Walking off an edge is only on the table if it is allowed to change
+        // surfaces at all.
+        let drop_available = ctx.cfg.jump_between_windows
+            && ctx
+                .world
                 .has_ledge_below(self.x as i32, self.y as i32, JUMP_MAX_DX);
 
         // Restlessness stretches or squeezes how long a choice is held, so a
@@ -839,6 +920,105 @@ mod tests {
             }
         }
         moving as f32 / total as f32
+    }
+
+    /// Floor plus two stacked window ledges, all within hop range.
+    fn layered_world() -> World {
+        World::for_test(
+            vec![Monitor {
+                rect: RECT { left: 0, top: 0, right: 1600, bottom: 1000 },
+                work: RECT { left: 0, top: 0, right: 1600, bottom: FLOOR_Y },
+            }],
+            vec![
+                Ledge { x0: 0, x1: 1600, y: FLOOR_Y },
+                Ledge { x0: 200, x1: 900, y: 700 },
+                Ledge { x0: 300, x1: 1000, y: 460 },
+            ],
+        )
+    }
+
+    /// Drop a pet onto a given world and let it settle.
+    fn settle_on(set: &SpriteSet, cfg: &Config, w: &World, x: f32, y: f32) -> (Pet, Rng) {
+        let mut pet = Pet::new(x, y);
+        pet.set_body_width(96, Kind::Pal.body_half_frac());
+        let mut rng = Rng::new();
+        for _ in 0..80 {
+            let mut ctx = Ctx {
+                world: w,
+                cursor: (10_000, 10_000),
+                cpu_load: 0.0,
+                idle_ms: 0,
+                cfg,
+                rng: &mut rng,
+            };
+            pet.update(25, &mut ctx, set);
+            if pet.grounded {
+                break;
+            }
+        }
+        assert!(pet.grounded, "pet never landed");
+        (pet, rng)
+    }
+
+    fn roaming_config(jump: bool) -> Config {
+        let mut cfg = Config::default();
+        cfg.jump_between_windows = jump;
+        cfg.roam = 100; // decide often, so the test does not need to run for ages
+        cfg.sleep_after_idle_secs = 86_400;
+        cfg.cpu_annoy_percent = 100;
+        cfg.chase_cursor = false;
+        cfg
+    }
+
+    /// Every surface the pet stood on during a run.
+    fn levels_visited(cfg: &Config, ticks: usize) -> std::collections::BTreeSet<i32> {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let w = layered_world();
+        // Start on the middle ledge, so it can go either way.
+        let (mut pet, mut rng) = settle_on(&set, cfg, &w, 550.0, 650.0);
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..ticks {
+            let mut ctx = Ctx {
+                world: &w,
+                cursor: (10_000, 10_000),
+                cpu_load: 0.0,
+                idle_ms: 0,
+                cfg,
+                rng: &mut rng,
+            };
+            pet.update(25, &mut ctx, &set);
+            if pet.grounded {
+                seen.insert(pet.y as i32);
+            }
+        }
+        seen
+    }
+
+    /// It used to only ever climb — `ledge_above` was the only target, so the
+    /// pet accumulated on the topmost window and stayed there.
+    #[test]
+    fn hops_both_up_and_down() {
+        let seen = levels_visited(&roaming_config(true), 12_000);
+        assert!(
+            seen.contains(&460),
+            "never climbed to the top ledge; visited {seen:?}"
+        );
+        assert!(
+            seen.contains(&FLOOR_Y),
+            "never came back down to the floor; visited {seen:?}"
+        );
+    }
+
+    /// With the toggle off it stays put on whatever it is standing on.
+    #[test]
+    fn toggle_off_keeps_it_on_one_surface() {
+        let seen = levels_visited(&roaming_config(false), 12_000);
+        assert_eq!(
+            seen.len(),
+            1,
+            "should never change surface with jumping off; visited {seen:?}"
+        );
+        assert!(seen.contains(&700), "should have stayed on the middle ledge");
     }
 
     /// Regression: "Go to sleep" used to last a single tick. Sleep is driven

@@ -23,6 +23,10 @@ pub struct Config {
     pub chase_cursor: bool,
     /// Stand on the top edges of other windows, not just the desktop floor.
     pub walk_on_windows: bool,
+    /// Hop up onto windows and drop back down of its own accord. With this off
+    /// the creature stays on whatever surface it is currently standing on and
+    /// just roams along it.
+    pub jump_between_windows: bool,
     /// Perk up and look at newly opened application windows.
     pub react_to_new_apps: bool,
     /// Fall asleep after this many seconds with no keyboard or mouse input.
@@ -54,6 +58,7 @@ impl Default for Config {
             roam: 45,
             chase_cursor: false,
             walk_on_windows: true,
+            jump_between_windows: true,
             react_to_new_apps: true,
             sleep_after_idle_secs: 180,
             cpu_annoy_percent: 80,
@@ -415,6 +420,9 @@ const HEADER: &str = "\
 #            and it appears in the tray's Sprite menu. Writing one is covered
 #            in sprites\\HOW-TO-make-a-sprite.txt -- or skip all of it and use
 #            Tray > Sprite > Make a copy to edit...
+# jump_between_windows
+#          : whether it hops between surfaces on its own. Off = it stays on
+#            whatever it is standing on and just roams along it.
 # roam     : 0-100, how restless the creature is -- how often it wanders off
 #            on its own rather than settling. The tray's \"Roam around\" menu
 #            sets this in steps; any value in between works here.

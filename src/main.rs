@@ -332,6 +332,7 @@ impl App {
             let st = tray::MenuState {
                 chase: self.cfg.chase_cursor,
                 walk_on_windows: self.cfg.walk_on_windows,
+                jump_between_windows: self.cfg.jump_between_windows,
                 react: self.cfg.react_to_new_apps,
                 asleep: self.pet.is_sleeping(),
                 scale: self.cfg.scale,
@@ -362,6 +363,9 @@ impl App {
                 } else {
                     self.world.floors_only();
                 }
+            }
+            CMD_JUMP => {
+                self.cfg.jump_between_windows = !self.cfg.jump_between_windows
             }
             CMD_REACT => self.cfg.react_to_new_apps = !self.cfg.react_to_new_apps,
             CMD_SLEEP => {

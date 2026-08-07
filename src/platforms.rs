@@ -241,6 +241,44 @@ impl World {
             .any(|l| l.y > y + 24 && (x.clamp(l.x0, l.x1) - x).abs() <= max_dx)
     }
 
+    /// A ledge below `(x, y)` that the creature could deliberately hop down to.
+    ///
+    /// The mirror of [`Self::ledge_above`]. Without it the pet can only ever
+    /// climb, and ends up stranded on whatever the topmost window happens to be.
+    pub fn ledge_below(
+        &self,
+        x: i32,
+        y: i32,
+        max_drop: i32,
+        max_dx: i32,
+        min_width: i32,
+        pick: u32,
+    ) -> Option<Ledge> {
+        // A drop is only worth taking if it lands somewhere clearly lower; a
+        // few pixels down is a stumble, not a hop.
+        let reachable = |l: &Ledge| {
+            let drop = l.y - y;
+            drop >= 24
+                && drop <= max_drop
+                && l.width() >= min_width
+                && (x.clamp(l.x0, l.x1) - x).abs() <= max_dx
+        };
+        let n = self.ledges.iter().filter(|l| reachable(l)).count();
+        if n == 0 {
+            return None;
+        }
+        // Prefer the nearest surface below: dropping past two windows onto the
+        // taskbar when there was a window right underneath looks like a miss.
+        let mut candidates: Vec<&Ledge> = self.ledges.iter().filter(|l| reachable(l)).collect();
+        candidates.sort_by_key(|l| l.y);
+        let nearest_y = candidates[0].y;
+        let close: Vec<&Ledge> = candidates
+            .into_iter()
+            .filter(|l| l.y - nearest_y <= 24)
+            .collect();
+        close.get(pick as usize % close.len()).map(|l| **l)
+    }
+
     /// A ledge above `(x, y)` that the creature could jump up to.
     ///
     /// `pick` selects among the candidates so the pet does not always hop to
