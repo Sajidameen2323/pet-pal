@@ -27,6 +27,30 @@ layout.
 Everything below is for building a sheet from scratch instead.
 
 
+## If your sheet came out of an image generator
+
+It almost certainly needs processing first. The usual faults are an opaque
+background instead of alpha, sprites placed freehand so there is no real grid,
+a ground plate painted under each pose, and a render several times larger than
+the pixel art it depicts.
+
+[`tools/sheetconv`](../tools/sheetconv/) fixes all four:
+
+```bash
+cd tools/sheetconv && cargo build --release
+./target/release/sheetconv my-sheet.png out --cell 64 --cols 8 --rows 5 --trim-bottom 14
+```
+
+Run it with no options first and read what it prints — it reports the grid it
+detected and the largest sprite it found, which is how you tell whether you need
+`--cols`/`--rows` or `--key-white`. Full notes in its
+[README](../tools/sheetconv/README.md).
+
+When generating a sheet, you will save yourself the `--trim-bottom` step by
+asking for **no ground, no platform, no shadow** and a **transparent
+background** up front.
+
+
 ## Sheet layout
 
 The PNG is sliced into a grid of equal cells. Frames are numbered

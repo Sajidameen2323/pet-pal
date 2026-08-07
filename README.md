@@ -237,6 +237,7 @@ That comes from four decisions:
 | `mouse.rs` | The mouse's drawing |
 | `render.rs` | The layered-window DIB canvas and tray icon construction |
 | `sheet.rs` | Sprite-sheet export, and the app icon generator |
+| `tools/sheetconv/` | Standalone tool: fits an arbitrary contact sheet onto a sprite grid |
 | `sysinfo.rs` | CPU load, idle time, working set |
 | `tray.rs` | Notification area icon, menu, balloons |
 | `config.rs` | TOML settings |

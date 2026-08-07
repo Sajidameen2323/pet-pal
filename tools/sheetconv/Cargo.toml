@@ -1,0 +1,14 @@
+[package]
+name = "sheetconv"
+version = "0.1.0"
+edition = "2021"
+description = "Fit an arbitrary contact sheet onto a PetPal sprite grid"
+
+# Its own workspace: keeps `cargo build` in the repo root building only the app.
+[workspace]
+
+[dependencies]
+png = "0.18"
+
+[profile.release]
+opt-level = 2
