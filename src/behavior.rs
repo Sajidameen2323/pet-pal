@@ -1265,6 +1265,68 @@ mod tests {
         }
     }
 
+    /// The commonest desktop there is: one 1080p screen, one File Explorer
+    /// window open in the lower right, and the pet down on the taskbar.
+    ///
+    /// Worth pinning as its own case because the numbers are so lopsided. The
+    /// window's top is 559px up, twice the jump ceiling, so the only way onto it
+    /// is the left edge — and that edge is 302px away sideways, most of the
+    /// 500px the pet will walk to reach one. Trim either constant and this
+    /// perfectly ordinary desktop silently becomes unclimbable.
+    fn explorer_window_world() -> World {
+        let mut w = World::for_test(
+            vec![Monitor {
+                rect: RECT { left: 0, top: 0, right: 1920, bottom: 1080 },
+                work: RECT { left: 0, top: 0, right: 1920, bottom: 1035 },
+            }],
+            vec![
+                Ledge { x0: 0, x1: 1920, y: 1035 },   // taskbar
+                Ledge { x0: 477, x1: 1880, y: 476 },  // the window's title bar
+            ],
+        );
+        w.walls = vec![
+            Wall { x: 477, y_top: 476, y_bottom: 1035, inward: 1 },
+            Wall { x: 1880, y_top: 476, y_bottom: 1035, inward: -1 },
+        ];
+        w
+    }
+
+    #[test]
+    fn climbs_a_single_explorer_window_from_the_taskbar() {
+        assert!(1035 - 476 > JUMP_MAX_RISE, "the window top must be out of jumping reach");
+        assert!(477 - 175 <= CLIMB_SEEK_DX, "the pet must be willing to walk to the edge");
+
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        // The stock Roam setting, not the cranked-up one the other roaming
+        // tests use: this is about whether an ordinary desktop works, and how
+        // long it takes at the default is part of the answer. Measured over
+        // these seeds it lands between 37s and 4m40s, which is why the tick
+        // budget below is 10 minutes.
+        let mut cfg = roaming_config(true);
+        cfg.roam = 45;
+
+        for seed in [2u64, 9, 40, 77, 5, 13, 88, 101] {
+            let w = explorer_window_world();
+            // Bottom left of the desktop, where the pet in the screenshot was.
+            let (mut pet, mut rng) = settle_on_seeded(&set, &cfg, &w, 175.0, 1000.0, seed);
+            assert_eq!(pet.y as i32, 1035, "should start on the taskbar");
+
+            let mut reached = false;
+            for _ in 0..24_000 {
+                let mut ctx = Ctx {
+                    world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
+                    idle_ms: 0, cfg: &cfg, rng: &mut rng,
+                };
+                pet.update(25, &mut ctx, &set);
+                if pet.grounded && pet.y as i32 == 476 {
+                    reached = true;
+                    break;
+                }
+            }
+            assert!(reached, "seed {seed}: never got up onto the Explorer window");
+        }
+    }
+
     /// And it must come back down again rather than living up there.
     #[test]
     fn comes_back_down_from_a_tall_window() {
