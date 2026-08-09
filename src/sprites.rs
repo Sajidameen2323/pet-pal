@@ -556,11 +556,18 @@ fn draw_legs(r: &mut Raster, ox: i32, legs: Legs, pal: &Palette) {
 /// Zzz / steam / "!" — the default effect set, shared by any creature that
 /// does not want something bespoke.
 pub(crate) fn draw_fx(r: &mut Raster, p: &Pose, pal: &Palette) {
-    // Effect positions were chosen against a 32px frame. Scale them across so
-    // they stay beside the creature's head on wider frames like the mouse's,
-    // rather than hanging over the middle of its back.
+    draw_fx_at(r, p, pal, r.w / 2);
+}
+
+/// Same, for a creature whose head is not in the middle of its cell.
+///
+/// The positions below were chosen against a 32px frame with the head centred,
+/// which is true of Pal, Vader and the mouse but not of the monkey — its head
+/// sits well to the right of its hips, and effects laid out for the centre land
+/// squarely on its face.
+pub(crate) fn draw_fx_at(r: &mut Raster, p: &Pose, pal: &Palette, head_x: i32) {
     let width = r.w;
-    let sx = move |x: i32| x * width / CW;
+    let sx = move |x: i32| head_x + (x - CW / 2) * width / CW;
     match p.fx {
         Fx::None => {}
         Fx::Zzz(ph) => {
@@ -622,6 +629,7 @@ pub enum Kind {
     Pal,
     Vader,
     Mouse,
+    Monkey,
 }
 
 impl Kind {
@@ -631,6 +639,7 @@ impl Kind {
             Kind::Pal => "pal",
             Kind::Vader => "vader",
             Kind::Mouse => "mouse",
+            Kind::Monkey => "monkey",
         }
     }
 
@@ -639,6 +648,7 @@ impl Kind {
             Kind::Pal => "Pal (the blob)",
             Kind::Vader => "Darth Vader",
             Kind::Mouse => "Mouse",
+            Kind::Monkey => "Monkey",
         }
     }
 
@@ -647,16 +657,17 @@ impl Kind {
             "pal" | "" => Some(Kind::Pal),
             "vader" | "darth" | "darthvader" => Some(Kind::Vader),
             "mouse" | "mousey" => Some(Kind::Mouse),
+            "monkey" | "ape" | "chimp" => Some(Kind::Monkey),
             _ => None,
         }
     }
 
-    /// Frame size. The mouse needs the extra width for its tail; cramming it
-    /// into a square would either clip the tail or shrink the animal.
+    /// Frame size. The monkey needs the extra width: arms down, it is already
+    /// as wide as it is tall, and the tail curls out well past the hip.
     pub fn frame_size(self) -> (u32, u32) {
         match self {
-            Kind::Pal | Kind::Vader => (CW as u32, CH as u32),
-            Kind::Mouse => (CW as u32, CH as u32),
+            Kind::Pal | Kind::Vader | Kind::Mouse => (CW as u32, CH as u32),
+            Kind::Monkey => (crate::monkey::FW as u32, CH as u32),
         }
     }
 
@@ -665,8 +676,10 @@ impl Kind {
     /// body, so the mouse's share is smaller than its frame suggests.
     pub fn body_half_frac(self) -> f32 {
         match self {
-            Kind::Pal | Kind::Vader => 0.375,
-            Kind::Mouse => 0.375,
+            Kind::Pal | Kind::Vader | Kind::Mouse => 0.375,
+            // Of 36px, the torso and head span about 20 -- the rest is tail and
+            // an outflung arm, neither of which needs to be over the ledge.
+            Kind::Monkey => 0.28,
         }
     }
 
@@ -677,6 +690,8 @@ impl Kind {
             Kind::Pal => 1.0,
             Kind::Vader => 0.8,
             Kind::Mouse => 1.7,
+            // Quick and fidgety, but not a rodent sprint.
+            Kind::Monkey => 1.25,
         }
     }
 
@@ -705,6 +720,16 @@ impl Kind {
                 blush: argb(255, 0xE0, 0x9E, 0xA4),
                 accent: argb(255, 0xFF, 0xFF, 0xFF),
             },
+            Kind::Monkey => Palette {
+                body: argb(255, 0x8A, 0x5A, 0x3B),
+                // Face mask, chest and palms, all the same cream.
+                belly: argb(255, 0xE8, 0xC9, 0xA0),
+                outline: argb(255, 0x3A, 0x21, 0x18),
+                eye: argb(255, 0x1A, 0x12, 0x0D),
+                // Inner ears, muzzle and the tail's root.
+                blush: argb(255, 0xC9, 0x8A, 0x72),
+                accent: argb(255, 0xFF, 0xF3, 0xE0),
+            },
         }
     }
 
@@ -713,10 +738,11 @@ impl Kind {
             Kind::Pal => draw_pose,
             Kind::Vader => crate::vader::draw,
             Kind::Mouse => crate::mouse::draw,
+            Kind::Monkey => crate::monkey::draw,
         }
     }
 
-    pub const ALL: [Kind; 3] = [Kind::Pal, Kind::Vader, Kind::Mouse];
+    pub const ALL: [Kind; 4] = [Kind::Pal, Kind::Vader, Kind::Mouse, Kind::Monkey];
 }
 
 /// Renders one pose of a creature into a 32x32 frame.

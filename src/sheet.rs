@@ -292,7 +292,7 @@ mod tests {
     #[test]
     #[ignore]
     fn preview_builtin_sheets() {
-        for kind in [Kind::Pal, Kind::Vader, Kind::Mouse] {
+        for kind in Kind::ALL {
             let set = builtin(kind, &kind.palette());
             let dir = std::path::Path::new("target/preview").join(kind.id());
             export_sheet(&set, &dir).expect("export");
@@ -312,6 +312,45 @@ mod tests {
         std::fs::create_dir_all("assets").unwrap();
         std::fs::write("assets/petpal.ico", &ico).unwrap();
         println!("wrote assets/petpal.ico ({} bytes)", ico.len());
+    }
+
+    /// Every built-in must actually draw every animation, and its climb has to
+    /// be its own artwork rather than a rename of the walk cycle. Adding a
+    /// creature is easy to half-finish: a `Legs` arm that falls through to the
+    /// default renders something, so nothing crashes and nothing looks obviously
+    /// broken until you watch it go up a window.
+    #[test]
+    fn every_builtin_animates_every_pose() {
+        for kind in Kind::ALL {
+            let set = builtin(kind, &kind.palette());
+            let name = kind.id();
+
+            for a in Anim::ALL {
+                let clip = set.clip(a);
+                assert!(!clip.idx.is_empty(), "{name} {a:?} has no frames");
+                for i in 0..clip.idx.len() {
+                    let ink = set.frame(a, i).px.iter().filter(|&&p| p >> 24 > 24).count();
+                    assert!(ink > 40, "{name} {a:?}[{i}] is blank or near-blank");
+                }
+            }
+
+            // A pose table that forgot to vary is the other half-finish: eight
+            // identical cells still animate, they just do not move.
+            for a in [Anim::Walk, Anim::Run, Anim::Climb] {
+                let first = &set.frame(a, 0).px;
+                assert!(
+                    (1..set.frame_count(a)).any(|i| &set.frame(a, i).px != first),
+                    "{name} {a:?} is the same frame repeated"
+                );
+            }
+
+            // Climbing must not just be walking under another name.
+            let n = set.frame_count(Anim::Climb).min(set.frame_count(Anim::Walk));
+            assert!(
+                (0..n).any(|i| set.frame(Anim::Climb, i).px != set.frame(Anim::Walk, i).px),
+                "{name} climb is the walk cycle"
+            );
+        }
     }
 
     /// Every sheet under `assets/sprites` must load, and no clip may point at a

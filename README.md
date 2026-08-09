@@ -73,17 +73,20 @@ Exit. Toggles and the Sprite / Size / Roam choices keep it open.
 
 ## Switching creatures
 
-**Tray → Sprite** lists the three built-ins plus every sheet you have installed:
+**Tray → Sprite** lists the four built-ins plus every sheet you have installed:
 
 - **Pal** — the default blob.
 - **Darth Vader** — armour black, red lenses, and he ignites a lightsabre
   instead of steaming when the CPU is pegged.
 - **Mouse** — a grey side-view quadruped with a diagonal-pair gait, far-side
   legs in shadow, a pink-cupped ear, whiskers and a tapering tail.
+- **Monkey** — long arms, a cream face mask and a prehensile tail, on a wider
+  36x32 cell. The only one whose near-side limbs are drawn *over* the body, so
+  it can genuinely reach overhead; watch it go up the side of a window.
 
 Each built-in scales the configured speed to suit itself, so they do not all
 move like the same creature wearing different clothes: the mouse skitters at
-1.7x, Vader does not hurry at 0.8x.
+1.7x, the monkey is quick and fidgety at 1.25x, Vader does not hurry at 0.8x.
 
 ### Making your own
 
@@ -152,7 +155,7 @@ jump_between_windows = true    # off = stays put on one surface
 react_to_new_apps = true
 sleep_after_idle_secs = 180    # also under Tray > Sleep when idle
 cpu_annoy_percent = 80
-sprite = "pal"                 # "pal", "vader", "mouse", or a folder in sprites\
+sprite = "pal"                 # "pal", "vader", "mouse", "monkey", or a sprites\ folder
 
 [colors]                       # optional per-key overrides, built-ins only
 body = "#5AA6F2"
@@ -239,6 +242,7 @@ That comes from four decisions:
 | `sprites.rs` | Sprite storage, shared pose tables, sheet loading |
 | `vader.rs` | The Sith lord's drawing |
 | `mouse.rs` | The mouse's drawing |
+| `monkey.rs` | The monkey's drawing, and its over-the-body limb rig |
 | `render.rs` | The layered-window DIB canvas and tray icon construction |
 | `sheet.rs` | Sprite-sheet export, and the app icon generator |
 | `tools/sheetconv/` | Standalone tool: fits an arbitrary contact sheet onto a sprite grid |
@@ -267,7 +271,7 @@ cargo test -- --ignored --nocapture
 ```
 
 That writes a contact sheet of every frame over a checkerboard; set
-`PETPAL_KIND=vader` or `mouse` to dump the others.
+`PETPAL_KIND=vader`, `mouse` or `monkey` to dump the others.
 
 ### The application icon
 

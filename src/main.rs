@@ -18,6 +18,7 @@
 
 mod behavior;
 mod config;
+mod monkey;
 mod mouse;
 mod platforms;
 mod render;
