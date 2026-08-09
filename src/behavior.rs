@@ -36,9 +36,7 @@ impl State {
             State::Drag => Anim::Drag,
             State::Alert => Anim::Alert,
             State::Sit => Anim::Sit,
-            // No dedicated climb art: the walk cycle's moving legs read fine
-            // against a vertical edge, and every custom sheet already has one.
-            State::Climb => Anim::Walk,
+            State::Climb => Anim::Climb,
         }
     }
 }
@@ -227,8 +225,8 @@ impl Pet {
     // -- external events ---------------------------------------------------
 
     pub fn begin_drag(&mut self) {
-        // Physically picking it up cancels a commanded nap.
-        self.forced_sleep = false;
+        // A commanded nap survives being carried: only "Wake up" ends it, so
+        // the pet curls back up wherever you put it down.
         self.land_below = None;
         self.climbing = None;
         self.enter(State::Drag, 0);
@@ -256,8 +254,12 @@ impl Pet {
     }
 
     /// Perk up and look toward something that just happened at `at_x`.
+    ///
+    /// A commanded nap outranks every one of these: an app opening, a reminder
+    /// firing or a poke must not drag the pet out of bed. The idle-timer nap is
+    /// left alone — that one is *meant* to break on the first sign of life.
     pub fn notice(&mut self, at_x: Option<i32>) {
-        if self.state == State::Drag {
+        if self.state == State::Drag || self.forced_sleep {
             return;
         }
         if let Some(tx) = at_x {
@@ -1247,6 +1249,11 @@ mod tests {
                 pet.update(25, &mut ctx, &set);
                 if pet.state == State::Climb {
                     climbed = true;
+                    assert_eq!(
+                        pet.anim(),
+                        Anim::Climb,
+                        "climbing must play the climb animation"
+                    );
                 }
                 if pet.grounded && pet.y as i32 == 323 {
                     reached_window = true;
@@ -1433,33 +1440,82 @@ mod tests {
         assert_ne!(pet.state, State::Sleep, "should not crawl back to bed");
     }
 
-    /// Picking the pet up cancels a commanded nap.
+    /// A commanded nap outranks everything except "Wake up". Carrying the pet
+    /// somewhere else, an app opening, a reminder firing, a poke, a busy CPU —
+    /// none of them may rouse it.
     #[test]
-    fn dragging_cancels_commanded_sleep() {
+    fn nothing_but_wake_up_ends_a_commanded_sleep() {
         let set = sprites::builtin(Kind::Pal, &Palette::default());
-        let cfg = chase_config();
+        let mut cfg = chase_config();
+        cfg.cpu_annoy_percent = 50;
         let (mut pet, mut rng) = grounded_pet(&set, &cfg);
         let w = world();
 
         pet.force_sleep();
         assert!(pet.is_sleeping());
+
+        // Carried across the desktop and put down again.
         pet.begin_drag();
         pet.drag_to(500.0, 300.0);
         pet.end_drag();
-        assert!(!pet.is_sleeping(), "picking it up should rouse it");
+        assert!(pet.is_sleeping(), "being carried must not cancel the nap");
 
-        for _ in 0..400 {
+        // An app opening, a reminder and a poke all come through `notice`.
+        pet.notice(Some(900));
+        pet.notice(None);
+        assert_ne!(pet.state, State::Alert, "notice woke a commanded sleep");
+
+        // Land, then run with the machine pegged and the cursor jumping about.
+        for i in 0..800 {
             let mut ctx = Ctx {
                 world: &w,
-                cursor: (400, FLOOR_Y),
-                cpu_load: 0.0,
-                idle_ms: 0,
+                cursor: (100 + (i % 700), FLOOR_Y - 200),
+                cpu_load: 0.95, // well over the annoy threshold
+                idle_ms: 0,     // input every tick
                 cfg: &cfg,
                 rng: &mut rng,
             };
             pet.update(25, &mut ctx, &set);
+            if i % 97 == 0 {
+                pet.notice(None);
+            }
         }
-        assert_ne!(pet.state, State::Sleep);
+        assert_eq!(pet.state, State::Sleep, "commanded sleep must hold");
+
+        pet.wake();
+        assert!(!pet.is_sleeping(), "'Wake up' is the one thing that works");
+    }
+
+    /// The automatic nap is the opposite: it exists to get out of the way, so
+    /// the first sign of life still ends it.
+    #[test]
+    fn idle_sleep_still_wakes_on_input() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let mut cfg = chase_config();
+        cfg.sleep_after_idle_secs = 5;
+        let (mut pet, mut rng) = grounded_pet(&set, &cfg);
+        let w = world();
+
+        let tick = |pet: &mut Pet, rng: &mut Rng, idle_ms: u64| {
+            let mut ctx = Ctx {
+                world: &w,
+                cursor: (400, FLOOR_Y),
+                cpu_load: 0.0,
+                idle_ms,
+                cfg: &cfg,
+                rng,
+            };
+            pet.update(25, &mut ctx, &set);
+        };
+
+        for _ in 0..400 {
+            tick(&mut pet, &mut rng, 30_000);
+        }
+        assert_eq!(pet.state, State::Sleep, "should have nodded off on its own");
+        assert!(!pet.forced_sleep, "the idle timer is not a command");
+
+        tick(&mut pet, &mut rng, 0);
+        assert_ne!(pet.state, State::Sleep, "input should end an idle nap");
     }
 
     /// `roam` is the one dial for restlessness; the ends of its range must

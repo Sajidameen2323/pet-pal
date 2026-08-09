@@ -200,6 +200,16 @@ fn draw_legs(r: &mut Raster, ox: i32, dy: i32, legs: Legs, pal: &Palette) {
             boot(r, ox - 3, FEET);
             boot(r, ox + 4, FEET);
         }
+        Legs::Cling(ph) => {
+            // There is no room for a raised boot clear of the cape at this
+            // size, and one hanging in space beside him reads as cargo rather
+            // than a leg. So the climb comes from a stagger: the lead boot up
+            // on the edge at hip height, just past the torso, and the trailing
+            // one driving from the bottom of the frame.
+            let s = SWING[(ph % 8) as usize];
+            boot(r, ox + 8, FEET - 4 - s);
+            boot(r, ox + 1, FEET + s / 2);
+        }
     }
 }
 

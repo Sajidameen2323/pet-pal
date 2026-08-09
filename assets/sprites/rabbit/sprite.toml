@@ -44,3 +44,10 @@ frame_ms = 180
 [anims.sit]
 frames = [40, 41]
 frame_ms = 500
+
+# Going up the side of a window. 24/25 are an upright, ears-erect bob, which
+# reads as hauling itself over the lip; the hop cycle does not, against a
+# vertical edge. Omit this and you would get `walk`.
+[anims.climb]
+frames = [24, 25]
+frame_ms = 130

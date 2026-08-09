@@ -98,7 +98,7 @@ laid-out sheet instead of an empty grid:
 2. Open `creature.png` in any pixel editor (Aseprite, Piskel, Paint.NET, even
    Paint if you keep the transparency).
 3. Repaint the cells. Keep the grid alignment — the manifest addresses frames by
-   number, so you can change one cell or all 44.
+   number, so you can change one cell or all 52.
 4. Rename the folder to whatever you want to call your creature.
 5. **Tray → Sprite** and pick it. Already running? **Reload config & sprites**.
 
@@ -114,7 +114,7 @@ into `%APPDATA%\PetPal\sprites\` and it appears in the menu. No path editing
 required.
 
 **[docs/SPRITES.md](docs/SPRITES.md) is the full authoring guide**: grid layout
-and frame numbering, the manifest reference, what each of the nine animations is
+and frame numbering, the manifest reference, what each of the ten animations is
 for and when it plays, the anchoring rules, and what the error messages mean.
 The app drops a copy into the sprites folder on first run, so it is there when
 you need it.
@@ -249,7 +249,7 @@ That comes from four decisions:
 | `win.rs` | String marshalling, clock, PRNG |
 
 All three creatures are drawn procedurally at startup from a `Pose` struct (body
-bob, ear angle, eye state, leg phase, tail sway, effects), so the 44 frames of
+bob, ear angle, eye state, leg phase, tail sway, effects), so the 52 frames of
 each are a small piece of code rather than a binary blob. The pose tables and
 frame timings are shared; only the drawing function differs, so a fourth
 creature is one new module plus a line in `Kind`.

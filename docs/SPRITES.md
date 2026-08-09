@@ -69,7 +69,7 @@ The PNG is sliced into a grid of equal cells. Frames are numbered
   the right is ignored, so a stray pixel of padding costs you a whole column.
 * Any cell size works. The built-ins use 32x32; a long creature is happier in
   something like 48x32.
-* Any number of frames. The built-ins use 44, but two is a valid sheet.
+* Any number of frames. The built-ins use 52, but two is a valid sheet.
 * Must be an **RGBA PNG**. Indexed-colour PNGs are rejected — if your editor
   saves indexed by default, export as 32-bit / "RGBA" / "true colour + alpha".
 
@@ -102,7 +102,7 @@ will not crash anything — the animation just gets shorter.
 
 ## The animations
 
-Nine names are recognised. **Every one is optional: anything you leave out falls
+Ten names are recognised. **Every one is optional: anything you leave out falls
 back to `idle`**, so a sheet with a single idle frame already works, and
 `idle` + `walk` is enough to feel alive.
 
@@ -117,9 +117,17 @@ back to `idle`**, so a sheet with a single idle frame already works, and
 | `drag` | While you are holding it with the mouse. | 2 | 200 |
 | `alert` | Reminders, an app opening, and clicking the pet. | 4 | 150 |
 | `sit` | Resting. Alternates with `idle`; `roam` sets how often. | 2 | 420 |
+| `climb` | Going up the side of a window too tall to jump onto. | 8 | 85 |
 
 Frame counts are yours to choose — those are just what the built-ins do. Walk
 and run read much better with 6-8 frames than with 4.
+
+`climb` is the one exception to the fallback rule: leave it out and you get
+`walk`, not `idle`, because a creature scaling a window edge should at least be
+moving its legs. Draw it as if the wall is **in front** of the creature (to its
+right, since you draw facing right) — head up at the lip, limbs reaching and
+pushing, body pressed in. Frames are not rotated, so a plain sideways walk cycle
+is what a missing `climb` looks like.
 
 Animations loop, and switching animation restarts it at frame 0.
 

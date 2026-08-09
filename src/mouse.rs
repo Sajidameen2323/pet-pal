@@ -34,7 +34,15 @@ pub(crate) fn draw(r: &mut Raster, p: &Pose, pal: &Palette) {
 fn draw_standing(r: &mut Raster, p: &Pose, pal: &Palette) {
     // A running mouse stretches out; `lean` pushes the head forward and the
     // haunches back rather than tilting the whole body like a biped.
-    let stretch = p.lean;
+    //
+    // Climbing wants the opposite of a stretch. On an upright creature `lean`
+    // means "pressed into the wall"; here that has to become a bunch, head
+    // drawn back over the shoulders, or the mouse scales a window looking like
+    // it is sprinting flat out.
+    let stretch = match p.legs {
+        Legs::Cling(_) => -p.lean / 2,
+        _ => p.lean,
+    };
     let ox = CW / 2;
     let by = 24 + p.body_dy;
     let bry = 4 + p.squash;
@@ -235,6 +243,19 @@ fn draw_legs(r: &mut Raster, ox: i32, stretch: i32, legs: Legs, far: u32, pal: &
             paw(r, back + 1, py, near);
             paw(r, front - 3, py - 2, far);
             paw(r, back + 3, py - 2, far);
+        }
+        Legs::Cling(ph) => {
+            // A reaching forelimb has nowhere to go on this creature: the snout
+            // already runs to the right edge of the cell, and the barrel covers
+            // everything above row 28. So the climb reads from all four legs
+            // bunched forward under the chest, scrabbling in antiphase, instead
+            // of from a big overhead grab.
+            let a = SWING[(ph % 8) as usize];
+            let b = -a;
+            paw(r, front - 1, py - lift_of(a), near);
+            paw(r, front - 3, py + 1 - lift_of(b), far);
+            paw(r, front - 5, py - lift_of(b), near);
+            paw(r, front - 7, py + 1 - lift_of(a), far);
         }
     }
 }

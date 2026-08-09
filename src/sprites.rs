@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-pub const ANIM_COUNT: usize = 9;
+pub const ANIM_COUNT: usize = 10;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Anim {
@@ -21,6 +21,7 @@ pub enum Anim {
     Drag = 6,
     Alert = 7,
     Sit = 8,
+    Climb = 9,
 }
 
 impl Anim {
@@ -34,6 +35,7 @@ impl Anim {
         Anim::Drag,
         Anim::Alert,
         Anim::Sit,
+        Anim::Climb,
     ];
 
     pub fn key(self) -> &'static str {
@@ -47,6 +49,7 @@ impl Anim {
             Anim::Drag => "drag",
             Anim::Alert => "alert",
             Anim::Sit => "sit",
+            Anim::Climb => "climb",
         }
     }
 }
@@ -275,6 +278,8 @@ pub(crate) enum Legs {
     Tuck,
     Splay,
     Dangle,
+    /// Braced against a wall in front, hauling upward in antiphase.
+    Cling(u8),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -527,6 +532,23 @@ fn draw_legs(r: &mut Raster, ox: i32, legs: Legs, pal: &Palette) {
             r.rect(ox + 3, FEET - 4, ox + 5, FEET - 1, pal.body);
             paw(r, ox - 4, FEET);
             paw(r, ox + 4, FEET);
+        }
+        Legs::Cling(ph) => {
+            // Both limbs out on the wall ahead: one paw reaching for the lip,
+            // the other pushing down by the hip, swapping through the cycle.
+            //
+            // Legs are drawn before the body, so anything inside the body's
+            // silhouette (x within ox+-8, y within 16..28) is painted over and
+            // vanishes. The reach has to clear it, and a short arm keeps the
+            // paw attached rather than floating.
+            let s = SWING[(ph % 8) as usize];
+            let (hi, lo) = (10 + s, FEET - 4 - s);
+            // Upper arm angles up to the lip; the lower one is nearly straight.
+            r.rect(ox + 3, hi + 2, ox + 6, hi + 3, pal.body);
+            r.rect(ox + 6, hi, ox + 9, hi + 1, pal.body);
+            paw(r, ox + 10, hi);
+            r.rect(ox + 3, lo, ox + 9, lo + 1, pal.body);
+            paw(r, ox + 10, lo);
         }
     }
 }
@@ -847,6 +869,27 @@ fn build_creature(draw: DrawFn, pal: &Palette, fw: i32, fh: i32) -> SpriteSet {
         })
         .collect();
 
+    // Climb: hauling up the vertical edge of a window. The renderer cannot
+    // rotate a cell, so the read has to come entirely from the pose — pressed
+    // into the edge it is facing, head craned up at the lip, limbs reaching and
+    // pushing in antiphase, and a body that heaves up on each pull rather than
+    // rising smoothly. The tail hangs instead of counter-swinging: there is no
+    // stride to balance.
+    let climb: Vec<Pose> = (0..8)
+        .map(|i| Pose {
+            legs: Legs::Cling(i as u8),
+            lean: [2, 3, 3, 2, 2, 3, 3, 2][i],
+            body_dy: [0, -1, -2, -1, 0, -1, -2, -1][i],
+            head_dy: [-2, -3, -3, -2, -2, -3, -3, -2][i],
+            head_dx: 1,
+            squash: [0, -1, -1, 0, 0, -1, -1, 0][i],
+            ears_back: true,
+            tail: [-2, -1, 0, -1, -2, -1, 0, -1][i],
+            eyes: Eyes::Wide,
+            ..Default::default()
+        })
+        .collect();
+
     // Order must match the `Anim` discriminants.
     clips.push(bake(&mut frames, &idle, 240));
     clips.push(bake(&mut frames, &walk, 65));
@@ -857,6 +900,7 @@ fn build_creature(draw: DrawFn, pal: &Palette, fw: i32, fh: i32) -> SpriteSet {
     clips.push(bake(&mut frames, &drag, 200));
     clips.push(bake(&mut frames, &alert, 150));
     clips.push(bake(&mut frames, &sit, 420));
+    clips.push(bake(&mut frames, &climb, 85));
 
     SpriteSet {
         w: fw as u32,
@@ -986,6 +1030,18 @@ pub fn load_sheet(dir: &Path) -> Result<SpriteSet, String> {
                 frame_ms: idle_ms,
             }),
         }
+    }
+
+    // `climb` is the newest animation, so most sheets in the wild predate it.
+    // Idle is the wrong fallback here — a creature going up a window edge would
+    // stand perfectly still while it moved. The walk cycle's moving legs read
+    // fine against a vertical edge, which is what the built-ins used to do.
+    if !m.anims.contains_key(Anim::Climb.key()) {
+        let walk = &clips[Anim::Walk as usize];
+        clips[Anim::Climb as usize] = Clip {
+            idx: walk.idx.clone(),
+            frame_ms: walk.frame_ms,
+        };
     }
 
     Ok(SpriteSet {

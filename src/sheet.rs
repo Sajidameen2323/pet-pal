@@ -286,6 +286,20 @@ mod tests {
     use super::*;
     use crate::sprites::{builtin, Kind};
 
+    /// Dump every built-in as a sheet under `target/preview/` so a change to
+    /// the pose tables can actually be looked at. Developer tooling:
+    /// `cargo test -- --ignored preview_builtin_sheets`.
+    #[test]
+    #[ignore]
+    fn preview_builtin_sheets() {
+        for kind in [Kind::Pal, Kind::Vader, Kind::Mouse] {
+            let set = builtin(kind, &kind.palette());
+            let dir = std::path::Path::new("target/preview").join(kind.id());
+            export_sheet(&set, &dir).expect("export");
+            println!("{} -> {}", kind.label(), dir.display());
+        }
+    }
+
     /// Regenerate `assets/petpal.ico`, which `build.rs` embeds in the exe.
     /// Developer tooling, not an assertion: run with
     /// `cargo test -- --ignored generate_app_icon`.
