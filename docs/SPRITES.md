@@ -67,8 +67,9 @@ The PNG is sliced into a grid of equal cells. Frames are numbered
 
 * Columns are `image_width / frame_width`, rounded **down**. A partial column on
   the right is ignored, so a stray pixel of padding costs you a whole column.
-* Any cell size works. The built-ins use 32x32; a long creature is happier in
-  something like 48x32.
+* Any cell size works, and cells need not be square. Three of the built-ins use
+  32x32; the monkey uses 36x32 because its arms and tail need the width. A long
+  creature is happier in something like 48x32.
 * Any number of frames. The built-ins use 52, but two is a valid sheet.
 * Must be an **RGBA PNG**. Indexed-colour PNGs are rejected — if your editor
   saves indexed by default, export as 32-bit / "RGBA" / "true colour + alpha".
@@ -99,6 +100,65 @@ Each animation takes **either** `frames` **or** `row`/`count`. If you give both,
 Indices pointing outside the grid are dropped silently, so trimming your sheet
 will not crash anything — the animation just gets shorter.
 
+**An index pointing at an empty cell is not an error, and that is the one to
+watch for.** Nothing warns you; the creature simply becomes invisible for the
+whole of that animation. If a pose disappears in use, count your cells — an 8x6
+grid is 48 cells whether or not you drew in all of them, and it is easy to write
+`38` when the art you meant is at `40`.
+
+### A complete manifest
+
+All ten animations on a 52-frame, 8-wide sheet — copy this and renumber:
+
+```toml
+image = "creature.png"
+frame_width = 32
+frame_height = 32
+
+[anims.idle]
+frames = [0, 1, 2, 3, 4, 5, 6, 7]
+frame_ms = 240
+
+[anims.walk]
+row = 1
+frame_ms = 65
+
+[anims.run]
+row = 2
+frame_ms = 38
+
+[anims.fall]
+frames = [24, 25]
+frame_ms = 140
+
+[anims.sleep]
+frames = [26, 27, 28, 29, 30, 31]
+frame_ms = 480
+
+[anims.annoyed]
+frames = [32, 33, 34, 35]
+frame_ms = 110
+
+[anims.drag]
+frames = [36, 37]
+frame_ms = 200
+
+[anims.alert]
+frames = [38, 39, 40, 41]
+frame_ms = 150
+
+[anims.sit]
+frames = [42, 43]
+frame_ms = 420
+
+[anims.climb]
+frames = [44, 45, 46, 47, 48, 49, 50, 51]
+frame_ms = 85
+```
+
+That is exactly the layout **Make a copy to edit...** writes out, so you can
+export a built-in and compare against this.
+
 
 ## The animations
 
@@ -122,12 +182,29 @@ back to `idle`**, so a sheet with a single idle frame already works, and
 Frame counts are yours to choose — those are just what the built-ins do. Walk
 and run read much better with 6-8 frames than with 4.
 
-`climb` is the one exception to the fallback rule: leave it out and you get
-`walk`, not `idle`, because a creature scaling a window edge should at least be
-moving its legs. Draw it as if the wall is **in front** of the creature (to its
-right, since you draw facing right) — head up at the lip, limbs reaching and
-pushing, body pressed in. Frames are not rotated, so a plain sideways walk cycle
-is what a missing `climb` looks like.
+### Drawing `climb`
+
+It is the newest animation and the least obvious, so it is worth its own note.
+
+`climb` plays when the pet scales the vertical edge of a window — the only way
+it can reach a window whose top is more than 280px up. It is the one exception
+to the fallback rule: leave it out and you get **`walk`**, not `idle`, because a
+creature going up a wall should at least be moving its legs.
+
+Frames are never rotated. The pet keeps facing the window it is holding, so:
+
+* Draw the wall as being **in front** of the creature — to its right, since you
+  draw facing right.
+* Head up toward the lip, limbs reaching and pushing, body pressed in.
+* The feet are **not** on the ground, so ignore the bottom-row rule here.
+* Two frames alternating is enough. The built-ins use eight at 85ms.
+
+If your creature's silhouette leaves no room for a raised limb, do not force
+one — a stagger works. The built-ins each solved this differently: Pal reaches
+with both forelimbs, Vader staggers his boots because there is nowhere to raise
+one clear of the cape, the mouse bunches all four legs forward, and the monkey
+goes hand over hand because it is the one drawn with its near-side limbs on top
+of its body.
 
 Animations loop, and switching animation restarts it at frame 0.
 
@@ -141,7 +218,10 @@ turns around. Keep such details central, or accept the flip.
 
 **2. Put the feet on the bottom row of the cell.** The bottom edge of the cell
 is what gets aligned with the taskbar or window edge. Empty rows below the feet
-make the creature hover; feet hanging past the bottom make it sink.
+make the creature hover; feet hanging past the bottom make it sink. This applies
+to every grounded pose — `idle`, `walk`, `run`, `sit`, `sleep`, `annoyed`,
+`alert`. It does **not** apply to `fall`, `drag` or `climb`, where the creature
+is off the ground and free to sit anywhere in the cell.
 
 And a third worth knowing: **the horizontal centre of the cell is the
 creature's position.** Empty space on one side shifts the creature off its own
@@ -185,6 +265,17 @@ creature and reports the reason in a tray balloon.
 
 If the creature loads but looks wrong, it is almost always the grid: check that
 the PNG's width is an exact multiple of `frame_width`.
+
+Silent faults, which produce no message at all:
+
+| Symptom | Cause |
+|---|---|
+| One animation shows nothing | Its `frames` point at cells you left empty. |
+| Hovers above every surface | Empty rows below the feet in the grounded poses. |
+| Sinks into the taskbar | Feet drawn past the bottom row. |
+| Hugs one end of a ledge | Body off-centre in the cell; centre it and let the tail overhang. |
+| Faces the wrong way | Art drawn facing left. Everything must face right. |
+| Walks up windows | You left out `climb`, so it fell back to `walk`. |
 
 
 ## Notes and limits

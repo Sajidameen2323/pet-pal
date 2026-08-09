@@ -96,6 +96,10 @@ const CLIMB_MIN_GAIN: i32 = 90;
 /// Give up on a climb that is taking absurdly long — the window moved, or the
 /// geometry changed under us.
 const CLIMB_TIMEOUT_MS: u32 = 20_000;
+/// And give up on *reaching* an edge that never gets closer. A creature pinned
+/// against something it cannot walk past would otherwise re-aim at the same
+/// edge forever, never rolling for anything else to do.
+const CLIMB_APPROACH_TIMEOUT_MS: u32 = 20_000;
 /// Minimum gap between jump attempts. Without it a pet that keeps missing the
 /// same ledge retries every tick and looks frantic.
 const JUMP_COOLDOWN_MS: u32 = 1_100;
@@ -147,6 +151,10 @@ pub struct Pet {
     jump_cooldown: u32,
     /// The edge currently being scaled.
     climbing: Option<Wall>,
+    /// An edge chosen but not yet reached. Held across decisions so the walk
+    /// over to it is a journey rather than a coin flip every few seconds.
+    climb_goal: Option<Wall>,
+    climb_goal_ms: u32,
     /// Time spent on the current surface since arriving on it.
     settled_ms: u32,
     /// While hopping *down*, the surface it launched from must be ignored or
@@ -181,6 +189,8 @@ impl Pet {
             dive: false,
             jump_cooldown: 0,
             climbing: None,
+            climb_goal: None,
+            climb_goal_ms: 0,
             settled_ms: 0,
             land_below: None,
             was_annoyed: false,
@@ -229,6 +239,7 @@ impl Pet {
         // the pet curls back up wherever you put it down.
         self.land_below = None;
         self.climbing = None;
+        self.climb_goal = None;
         self.enter(State::Drag, 0);
         self.grounded = false;
         self.ledge = None;
@@ -304,6 +315,7 @@ impl Pet {
         self.ledge = None;
         self.land_below = None;
         self.climbing = None;
+        self.climb_goal = None;
         self.enter(State::Fall, 0);
     }
 
@@ -312,6 +324,9 @@ impl Pet {
     pub fn update(&mut self, dt: u32, ctx: &mut Ctx, set: &SpriteSet) {
         self.state_ms = self.state_ms.saturating_add(dt);
         self.jump_cooldown = self.jump_cooldown.saturating_sub(dt);
+        if self.climb_goal.is_some() {
+            self.climb_goal_ms = self.climb_goal_ms.saturating_add(dt);
+        }
         if self.grounded {
             self.settled_ms = self.settled_ms.saturating_add(dt);
         }
@@ -412,6 +427,10 @@ impl Pet {
         self.dive = false;
         self.land_below = None;
         self.climbing = None;
+        // Arriving somewhere new drops any half-finished plan. Keeping it would
+        // let the pet skip the settle gate it just reset, land and immediately
+        // set off again — the yo-yo that gate exists to stop.
+        self.climb_goal = None;
         self.ledge = Some(l);
         self.enter(State::Idle, 700);
         self.confine_to_ledge();
@@ -599,9 +618,14 @@ impl Pet {
 
     /// Head for a climbable edge when nothing is within jumping reach.
     ///
-    /// No extra state is needed to remember the intent: the walk is given
-    /// roughly the time needed to cover the distance, so when it expires the
-    /// creature is beside the edge and the next decision grabs it.
+    /// The chosen edge is remembered. It used to be inferred from the walk
+    /// instead — give the walk roughly the time needed to cover the distance,
+    /// and when it expires the creature is beside the edge. That works right up
+    /// until the walk is short enough that `wander` gets another turn first, and
+    /// then the next decision is a fresh roll that often sends it back the other
+    /// way. Approaching an edge 300px off became a random walk: on a plain
+    /// one-window desktop it took between 37s and 4m40s to make a climb that
+    /// should take about five seconds of walking.
     fn seek_climb(&mut self, ctx: &mut Ctx) -> bool {
         if !self.grounded {
             return false;
@@ -614,15 +638,47 @@ impl Pet {
         ) else {
             return false;
         };
+        // Only worth setting out for if it is on the surface we are standing on.
+        if (w.x as f32 - self.x).abs() > CLIMB_GRAB_DX as f32
+            && !self.ledge.is_some_and(|l| l.holds(w.x))
+        {
+            return false;
+        }
+        self.climb_goal = Some(w);
+        self.climb_goal_ms = 0;
+        self.approach_wall(w, ctx)
+    }
 
+    /// Carry on toward an edge already chosen, if it is still worth reaching.
+    ///
+    /// Everything that could have changed underneath the plan is rechecked
+    /// here rather than trusted: the window may have moved, closed or been
+    /// resized, the pet may have been knocked onto a different surface, and the
+    /// user may have turned window-hopping off mid-walk.
+    fn resume_climb(&mut self, ctx: &mut Ctx) -> bool {
+        let Some(goal) = self.climb_goal else {
+            return false;
+        };
+        let stale = !ctx.cfg.jump_between_windows
+            || !self.grounded
+            || self.climb_goal_ms > CLIMB_APPROACH_TIMEOUT_MS
+            || ctx.world.wall_at(goal.x, self.y as i32).is_none()
+            || !(self.ledge.is_some_and(|l| l.holds(goal.x))
+                || (goal.x as f32 - self.x).abs() <= CLIMB_GRAB_DX as f32);
+        if stale {
+            self.climb_goal = None;
+            return false;
+        }
+        self.approach_wall(goal, ctx)
+    }
+
+    /// Walk the remaining distance to `w`, or take hold if already there.
+    fn approach_wall(&mut self, w: Wall, ctx: &mut Ctx) -> bool {
         let dx = w.x as f32 - self.x;
         if dx.abs() <= CLIMB_GRAB_DX as f32 {
+            self.climb_goal = None;
             self.start_climb(w);
             return true;
-        }
-        // Only worth walking over if it is on the surface we are standing on.
-        if !self.ledge.is_some_and(|l| l.holds(w.x)) {
-            return false;
         }
         self.facing = if dx < 0.0 { -1 } else { 1 };
         let speed = (ctx.cfg.speed * self.speed_scale).max(1.0);
@@ -784,6 +840,12 @@ impl Pet {
     /// shortening moving ones. At 0 the pet parks itself; at 100 it barely
     /// stops.
     fn wander(&mut self, ctx: &mut Ctx) {
+        // An edge already chosen outranks a fresh roll. This is the whole
+        // difference between walking to a window and drifting toward one.
+        if self.resume_climb(ctx) {
+            return;
+        }
+
         let roam = ctx.cfg.roam.min(100) as u32;
 
         // Moving between surfaces is what makes the pet feel like it lives in
@@ -1299,9 +1361,7 @@ mod tests {
         let set = sprites::builtin(Kind::Pal, &Palette::default());
         // The stock Roam setting, not the cranked-up one the other roaming
         // tests use: this is about whether an ordinary desktop works, and how
-        // long it takes at the default is part of the answer. Measured over
-        // these seeds it lands between 37s and 4m40s, which is why the tick
-        // budget below is 10 minutes.
+        // long it takes at the default is part of the answer.
         let mut cfg = roaming_config(true);
         cfg.roam = 45;
 
@@ -1311,19 +1371,28 @@ mod tests {
             let (mut pet, mut rng) = settle_on_seeded(&set, &cfg, &w, 175.0, 1000.0, seed);
             assert_eq!(pet.y as i32, 1035, "should start on the taskbar");
 
-            let mut reached = false;
-            for _ in 0..24_000 {
+            // Budget, not just eventual success. Committing to a chosen edge
+            // took these seeds from 37s-4m40s down to 12s-61s; without a bound
+            // that improvement can rot back to a random walk and every
+            // assertion here would still pass.
+            const BUDGET_MS: u32 = 90_000;
+            let mut arrived_ms = None;
+            for tick in 1..=(BUDGET_MS / 25) {
                 let mut ctx = Ctx {
                     world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
                     idle_ms: 0, cfg: &cfg, rng: &mut rng,
                 };
                 pet.update(25, &mut ctx, &set);
                 if pet.grounded && pet.y as i32 == 476 {
-                    reached = true;
+                    arrived_ms = Some(tick * 25);
                     break;
                 }
             }
-            assert!(reached, "seed {seed}: never got up onto the Explorer window");
+            assert!(
+                arrived_ms.is_some(),
+                "seed {seed}: never got up onto the Explorer window in {}s",
+                BUDGET_MS / 1000
+            );
         }
     }
 

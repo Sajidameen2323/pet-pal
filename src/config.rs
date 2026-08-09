@@ -242,8 +242,13 @@ fn error_position(e: &toml::de::Error) -> String {
         .unwrap_or_else(|| "an unknown position".into())
 }
 
-/// Create the sprite drop-in folder on first run and leave the authoring guide
-/// in it, so the feature is discoverable without going back to the repo.
+/// Create the sprite drop-in folder and leave the authoring guide in it, so the
+/// feature is discoverable without going back to the repo.
+///
+/// Rewritten every launch, not just the first: the guide changes when an
+/// animation is added, and a user who installed six months ago should not be
+/// reading a version that has never heard of `climb`. It is generated output,
+/// so there is nothing of theirs to overwrite.
 ///
 /// The guide is `include_str!`d from `docs/SPRITES.md` rather than duplicated:
 /// one copy, no drift. It lands as `.txt` so a double-click opens it.
@@ -267,6 +272,31 @@ mod tests {
 
     fn serialise(cfg: &Config) -> String {
         format!("{HEADER}{}", toml::to_string_pretty(cfg).unwrap())
+    }
+
+    /// The guide is what users author sheets against, and it is shipped into
+    /// their sprites folder. An animation the loader accepts but the guide never
+    /// names is an animation nobody will draw — and every built-in and every
+    /// creature id has to be findable there too.
+    #[test]
+    fn the_shipped_guide_documents_everything() {
+        for a in crate::sprites::Anim::ALL {
+            let key = a.key();
+            assert!(
+                SPRITE_GUIDE.contains(&format!("`{key}`")),
+                "docs/SPRITES.md never mentions the `{key}` animation"
+            );
+        }
+        // Quoted, and in the header specifically: that comment is the canonical
+        // list of what `sprite =` accepts. A bare substring search would pass on
+        // "holding it with the mouse".
+        for kind in sprites::Kind::ALL {
+            let id = kind.id();
+            assert!(
+                HEADER.contains(&format!("\"{id}\"")),
+                "the config header does not list {id:?} as a sprite option"
+            );
+        }
     }
 
     /// The header tells users to append `[[reminder]]` blocks. TOML rejects
@@ -415,7 +445,7 @@ const HEADER: &str = "\
 # PetPal configuration. Edit and pick \"Reload config & sprites\" from the
 # tray menu -- or just use the tray menu, which writes this file for you.
 #
-# sprite   : \"pal\", \"vader\", \"mouse\", or the name of a folder in sprites\\
+# sprite   : \"pal\", \"vader\", \"mouse\", \"monkey\", or a folder in sprites\\
 #            next to this file. Drop a folder with a sprite.toml + PNG in there
 #            and it appears in the tray's Sprite menu. Writing one is covered
 #            in sprites\\HOW-TO-make-a-sprite.txt -- or skip all of it and use
