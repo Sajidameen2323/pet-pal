@@ -7,7 +7,7 @@ fixes the four things that are usually wrong with them:
 
 | Problem | What sheetconv does |
 |---|---|
-| Opaque background instead of alpha | `--key-white` floods in from the image borders. Flooding from the edge rather than keying by colour means white *inside* the sprite — paws, chest, teeth — is kept. |
+| Opaque background instead of alpha | `--key-bg` floods in from the image borders, following a gradient because each step only has to resemble the pixel it spread from. Flooding from the edge rather than keying by colour means the same colour *inside* the sprite — paws, chest, teeth — is kept. `--key-white` is the older near-white-only version. |
 | Sprites placed freehand, no real grid | Detects each sprite, then re-lays them on an exact grid. |
 | A ground plate or shadow under each pose | `--trim-bottom N` drops N pixels off the bottom of every sprite. |
 | Rendered far larger than the art it depicts | `--cell N` sets the output cell size and downsamples with an area filter. |
@@ -62,8 +62,15 @@ feet actually start. Try that number, look at the result, adjust. Around 10-20
 px is typical for a 1500px-wide sheet. Too small leaves a pale sliver under the
 feet; too large starts eating the toes.
 
-**If nothing is found at all**, the background is probably opaque — add
-`--key-white`.
+**If the grid comes out as `1 columns x 1 rows`**, the background is opaque and
+the whole image read as one sprite — add `--key-bg`.
+
+**If the outer columns come out empty**, you forced `--cols`/`--rows` on a sheet
+with wide margins. Those options divide the whole image into equal bands; drop
+them and let detection find where the sprites actually are.
+
+**If nothing is found at all**, the image is blank, or the keying tolerance was
+high enough to erase it — try a smaller `--key-bg` number.
 
 ## Example
 

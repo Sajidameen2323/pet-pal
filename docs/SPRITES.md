@@ -197,21 +197,26 @@ still ends in `wrote`.
 
 | The grid line says | What happened | Add |
 |---|---|---|
-| `1 columns x 1 rows = 1 cells` | The background is solid, so the whole image looks like one big picture | `--key-white` |
-| Any other wrong count | Two pictures are touching, so they merged | `--cols 8 --rows 6` |
+| `1 columns x 1 rows = 1 cells` | The background is solid, so the whole image reads as one big picture | `--key-bg` |
+| A count that is too small | Two pictures are touching, so they merged | `--cols 8 --rows 6` |
+| Empty squares down the outer columns | You forced `--cols`/`--rows` on a sheet with wide margins | Remove them and let it detect |
 | `8 columns x 6 rows` but there is a pale sliver under the feet | A ground plate is painted under each pose | `--trim-bottom 13`, then adjust |
-| `no sprites found` | The image is blank, or `--key-white` erased everything | Check you passed the right file |
+| `no sprites found` | The image is blank, or the keying erased everything | Check the file; try a smaller `--key-bg` number |
 
-Most AI output needs all of them at once. Here is the same image again, done
+**Add options one at a time, and only when the grid line tells you to.** In
+particular, do not reach for `--cols`/`--rows` by default: they divide the
+*whole image* into equal bands, which is wrong whenever the generator left wide
+margins around the art — you get empty squares down the outer columns. Detection
+finds where the pictures actually are. Here is the same image again, done
 properly:
 
 ```
-sheetconv.exe input.png out --cols 8 --rows 6 --key-white --trim-bottom 13
+sheetconv.exe input.png out --key-bg --trim-bottom 13
 ```
 
 ```
 input      1024x768
-keyed      white background removed by border flood
+keyed      background removed by border flood, tolerance 30
 grid       8 columns x 6 rows = 48 cells
 trim       13 px off the bottom of each sprite
 sprites    48 found, largest 72x61, scaled by 0.862
@@ -226,9 +231,22 @@ count the pixels from the bottom of the plate up to where the feet actually
 start. Too small leaves a pale sliver under the feet; too big starts eating the
 toes. Run it, look at `out\creature.png`, adjust the number, run it again.
 
-`--key-white` floods in from the edges of the image rather than deleting every
-white pixel, so white **inside** your creature — eyes, teeth, a chest patch — is
-kept.
+**Backgrounds.** Try it with no keying option at all first — a PNG that already
+has transparency needs none, and many do even when the preview makes them look
+like they have a coloured backdrop. If the grid line says one big cell, the
+background really is opaque; then reach for `--key-bg`.
+
+`--key-bg` removes a backdrop of any colour, including a gradient or a vignette,
+by flooding in from the edges of the image. It follows a gradient because each
+step only has to resemble the pixel it spread from. Raise the number if a haze
+is left round the edges (`--key-bg 45`); lower it if the creature starts losing
+its outline (`--key-bg 18`).
+
+`--key-white` is the older, narrower version that only removes near-white. It
+does nothing at all on a grey or coloured backdrop, so prefer `--key-bg`.
+
+Both flood in from the edges rather than deleting every matching pixel, so the
+same colour **inside** your creature — white eyes, a pale chest — is kept.
 
 ## B4. The settings file
 

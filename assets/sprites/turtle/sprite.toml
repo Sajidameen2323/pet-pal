@@ -1,0 +1,67 @@
+# Ninja turtle. 8 x 6 grid of 64x64 cells, converted from a 1536x1024
+# generated sheet with sheetconv --key-bg 30.
+#
+# The generator did not lay the poses out in PetPal's order, so these are mapped
+# to what is actually drawn in each cell rather than to a standard layout:
+#
+#    0-7   standing, arms at sides         24-28  lying down asleep
+#    8-15  walking                         29-31  sulking in its shell
+#   16-17  clinging to a wall              32-34  asleep with a "z"
+#   18-20  running                            35  dozing in its shell
+#   21-23  airborne, arms up               36-39  cross, in its shell
+#   40-43  startled, with a "!"               44  sitting
+#      45  slumped flat                    46-47  shaken, wide-eyed
+#
+# Cell 35 is the only one nothing uses -- it duplicates the dozing idea that
+# 24-34 already cover. Reassign it if you want a longer sleep.
+
+image = "creature.png"
+frame_width = 64
+frame_height = 64
+
+[anims.idle]
+row = 0
+frame_ms = 200
+
+[anims.walk]
+row = 1
+frame_ms = 90
+
+# The two wall-clinging frames. The grey wall the generator drew beside the
+# turtle was erased: PetPal mirrors the sprite depending on which side of a
+# window it is scaling, so a painted-on wall is on the wrong side half the time.
+[anims.climb]
+frames = [16, 17]
+frame_ms = 160
+
+[anims.run]
+frames = [18, 19, 20]
+frame_ms = 60
+
+# Airborne -- used for falling and for jumping between windows.
+[anims.fall]
+frames = [21, 22, 23]
+frame_ms = 140
+
+[anims.sleep]
+frames = [24, 25, 26, 27, 28, 32, 33, 34]
+frame_ms = 450
+
+# Pulled into its shell with a temper swirl over its head.
+[anims.annoyed]
+frames = [29, 30, 31, 36, 37, 38, 39]
+frame_ms = 140
+
+# Startled by an app opening, a reminder, or a poke: "!" then settling.
+[anims.alert]
+frames = [40, 41, 42, 43]
+frame_ms = 170
+
+[anims.sit]
+frames = [44, 45]
+frame_ms = 450
+
+# While you are holding it with the mouse.
+[anims.drag]
+frames = [46, 47]
+frame_ms = 180

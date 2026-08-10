@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 const WHITE_LEVEL: u8 = 232;
 /// Alpha above this counts as ink when measuring sprites.
 const INK_ALPHA: u8 = 24;
+/// Default per-channel tolerance for `--key-bg`.
+const DEFAULT_BG_TOL: u8 = 30;
 
 struct Img {
     w: usize,
@@ -44,6 +46,7 @@ struct Opts {
     cell: usize,
     trim_bottom: usize,
     key_white: bool,
+    key_bg: Option<u8>,
     cols: Option<usize>,
     rows: Option<usize>,
 }
@@ -60,10 +63,14 @@ OPTIONS:
                        source-image pixels. Use this when the art has a ground
                        plate or shadow painted under each pose -- that is
                        artwork, not background, so nothing else will remove it.
-    --key-white        delete a white background by flooding in from the image
+    --key-white        delete a WHITE background by flooding in from the image
                        borders. Only needed when the PNG has no alpha. Flooding
                        from the edge rather than keying by colour means white
                        *inside* the sprite (paws, chest) is kept.
+    --key-bg [TOL]     same, but for a background of ANY colour, including a
+                       gradient or a vignette. TOL is the largest per-channel
+                       step it will follow (default 30). Raise it if a haze is
+                       left behind; lower it if the creature loses its edges.
     --cols N           force the column count instead of detecting it
     --rows N           force the row count instead of detecting it
     -h, --help         this text
@@ -92,6 +99,7 @@ fn parse_args() -> Result<Opts, String> {
         cell: 64,
         trim_bottom: 0,
         key_white: false,
+        key_bg: None,
         cols: None,
         rows: None,
     };
@@ -109,6 +117,13 @@ fn parse_args() -> Result<Opts, String> {
             "--cols" => { o.cols = Some(need(i)?); i += 2 }
             "--rows" => { o.rows = Some(need(i)?); i += 2 }
             "--key-white" => { o.key_white = true; i += 1 }
+            "--key-bg" => {
+                // Optional value: a bare --key-bg uses the default tolerance.
+                match a.get(i + 1).and_then(|v| v.parse::<u8>().ok()) {
+                    Some(t) => { o.key_bg = Some(t); i += 2 }
+                    None => { o.key_bg = Some(DEFAULT_BG_TOL); i += 1 }
+                }
+            }
             other => return Err(format!("unknown option {other}; try --help")),
         }
     }
@@ -161,6 +176,68 @@ fn write_png(path: &Path, px: &[[u8; 4]], w: usize, h: usize) -> Result<(), Stri
 // ---------------------------------------------------------------------------
 // Background keying
 // ---------------------------------------------------------------------------
+
+/// Delete a background of any colour by flooding inward from the border.
+///
+/// `--key-white` only helps when the background really is white. Image
+/// generators hand back grey studio backdrops, coloured washes and vignettes
+/// just as often, and on those it does nothing at all — the whole sheet then
+/// reads as one enormous sprite.
+///
+/// The test is against the *neighbour* rather than against a fixed seed colour,
+/// so the flood walks a gradient: each step only has to be similar to the pixel
+/// it spread from. Every border pixel is a seed, on the assumption that the art
+/// does not run off the edge of its own sheet.
+///
+/// `tol` is the largest per-channel jump treated as "same background". Too high
+/// and the flood eats into the creature wherever its colour approaches the
+/// backdrop's.
+fn key_background(img: &mut Img, tol: u8) {
+    let (w, h) = (img.w, img.h);
+    let near = |a: [u8; 4], b: [u8; 4]| {
+        b[3] > INK_ALPHA
+            && a[0].abs_diff(b[0]) <= tol
+            && a[1].abs_diff(b[1]) <= tol
+            && a[2].abs_diff(b[2]) <= tol
+    };
+
+    let mut bg = vec![false; w * h];
+    let mut q: VecDeque<usize> = VecDeque::new();
+    let seed = |i: usize, bg: &mut Vec<bool>, q: &mut VecDeque<usize>| {
+        if !bg[i] && img.px[i][3] > INK_ALPHA {
+            bg[i] = true;
+            q.push_back(i);
+        }
+    };
+    for x in 0..w {
+        seed(x, &mut bg, &mut q);
+        seed((h - 1) * w + x, &mut bg, &mut q);
+    }
+    for y in 0..h {
+        seed(y * w, &mut bg, &mut q);
+        seed(y * w + w - 1, &mut bg, &mut q);
+    }
+
+    while let Some(i) = q.pop_front() {
+        let (x, y) = (i % w, i / w);
+        let mut n: Vec<usize> = Vec::with_capacity(4);
+        if x > 0 { n.push(i - 1) }
+        if x + 1 < w { n.push(i + 1) }
+        if y > 0 { n.push(i - w) }
+        if y + 1 < h { n.push(i + w) }
+        for j in n {
+            if !bg[j] && near(img.px[i], img.px[j]) {
+                bg[j] = true;
+                q.push_back(j);
+            }
+        }
+    }
+    for i in 0..w * h {
+        if bg[i] {
+            img.px[i] = [0, 0, 0, 0];
+        }
+    }
+}
 
 /// Delete the background by flooding inward from the border.
 ///
@@ -311,7 +388,10 @@ fn run(o: &Opts) -> Result<(), String> {
     let mut img = read_png(&o.input)?;
     println!("input      {}x{}", img.w, img.h);
 
-    if o.key_white {
+    if let Some(tol) = o.key_bg {
+        key_background(&mut img, tol);
+        println!("keyed      background removed by border flood, tolerance {tol}");
+    } else if o.key_white {
         key_white_background(&mut img);
         println!("keyed      white background removed by border flood");
     }
