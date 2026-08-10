@@ -1,114 +1,388 @@
-# Making a PetPal sprite
+# Making a PetPal creature
 
-A PetPal creature is one PNG holding a grid of animation frames, plus a
-`sprite.toml` describing which frames belong to which animation. Drop the two
-into a folder, put the folder in `%APPDATA%\PetPal\sprites\`, and it appears in
-**Tray > Sprite**.
-
-
-## The quick way: start from a working copy
-
-**Tray > Sprite > Make a copy to edit...**
-
-That writes the creature you are currently using out as a real sprite sheet and
-opens the folder. You get `creature.png` and a `sprite.toml` that already
-matches it exactly, so you are repainting a finished sheet instead of guessing a
-layout.
-
-1. Export a copy.
-2. Open `creature.png` in any pixel editor that keeps transparency — Aseprite,
-   Piskel, Paint.NET, GIMP, Krita.
-3. Repaint the cells. Stay on the grid; you can change one cell or all of them.
-4. Rename the folder to whatever you want the creature called. That name is what
-   shows up in the menu.
-5. **Tray > Sprite** and pick it. If PetPal is already running, use
-   **Reload config & sprites**.
-
-Everything below is for building a sheet from scratch instead.
-
-
-## If your sheet came out of an image generator
-
-It almost certainly needs processing first. The usual faults are an opaque
-background instead of alpha, sprites placed freehand so there is no real grid,
-a ground plate painted under each pose, and a render several times larger than
-the pixel art it depicts.
-
-[`tools/sheetconv`](../tools/sheetconv/) fixes all four:
-
-```bash
-cd tools/sheetconv && cargo build --release
-./target/release/sheetconv my-sheet.png out --cell 64 --cols 8 --rows 5 --trim-bottom 14
-```
-
-Run it with no options first and read what it prints — it reports the grid it
-detected and the largest sprite it found, which is how you tell whether you need
-`--cols`/`--rows` or `--key-white`. Full notes in its
-[README](../tools/sheetconv/README.md).
-
-When generating a sheet, you will save yourself the `--trim-bottom` step by
-asking for **no ground, no platform, no shadow** and a **transparent
-background** up front.
-
-
-## Sheet layout
-
-The PNG is sliced into a grid of equal cells. Frames are numbered
-**left to right, top to bottom, starting at 0**:
+A PetPal creature is **two files in a folder**:
 
 ```
-+----+----+----+----+----+----+----+----+
-|  0 |  1 |  2 |  3 |  4 |  5 |  6 |  7 |
-+----+----+----+----+----+----+----+----+
-|  8 |  9 | 10 | 11 | 12 | 13 | 14 | 15 |
-+----+----+----+----+----+----+----+----+
-| 16 | 17 | ...
+my-creature\
+    creature.png     the artwork: a grid of small pictures
+    sprite.toml      a text file saying which pictures are which animation
 ```
 
-* Columns are `image_width / frame_width`, rounded **down**. A partial column on
-  the right is ignored, so a stray pixel of padding costs you a whole column.
-* Any cell size works, and cells need not be square. Three of the built-ins use
-  32x32; the monkey uses 36x32 because its arms and tail need the width. A long
-  creature is happier in something like 48x32.
-* Any number of frames. The built-ins use 52, but two is a valid sheet.
-* Must be an **RGBA PNG**. Indexed-colour PNGs are rejected — if your editor
-  saves indexed by default, export as 32-bit / "RGBA" / "true colour + alpha".
+Put that folder in `%APPDATA%\PetPal\sprites\` and it appears in **Tray >
+Sprite**. That is the whole system. Everything below is detail.
 
+There are three ways to get those two files. Pick one:
 
-## The manifest
+| | Best if | Effort |
+|---|---|---|
+| **A. Repaint a copy** | You want a sure thing | Low |
+| **B. Generate with AI** | You want something new and cannot draw | Medium |
+| **C. Draw from scratch** | You can use a pixel editor | High |
 
-`sprite.toml`, in the same folder as the PNG:
+---
+
+# A. Repaint a copy
+
+The safest route, because you start from a sheet that already works.
+
+1. **Tray > Sprite > Make a copy to edit...**
+   This writes the creature you are using now into
+   `%APPDATA%\PetPal\sprites\<name>-copy\` and opens the folder. You get
+   `creature.png` and a `sprite.toml` that already matches it.
+2. Open `creature.png` in any editor that keeps transparency — Paint.NET, GIMP,
+   Krita, Aseprite, Piskel. **Not** MS Paint; it will destroy the transparency.
+3. Repaint the pictures. Stay inside the grid squares. Change one or all.
+4. Rename the folder. **That name is what shows in the menu.**
+5. **Tray > Sprite** and pick it. If PetPal is already running, use **Reload
+   config & sprites** first.
+
+You never have to touch `sprite.toml` on this route.
+
+---
+
+# B. Generate with AI
+
+This section is written to be **copied and pasted**. The layout below is exact;
+do not change the numbers unless you understand the reference sections at the
+end.
+
+## B1. The sheet you are asking for
+
+**4 columns across, 10 rows down. One animation per row. 4 pictures per row.
+40 pictures total.**
+
+One animation per row is the point: you never have to count picture numbers,
+and the settings file below is the same every time.
+
+```
+            col 0     col 1     col 2     col 3
+row 0  |  idle    |  idle    |  idle    |  idle    |   standing still
+row 1  |  walk    |  walk    |  walk    |  walk    |   walking
+row 2  |  run     |  run     |  run     |  run     |   running
+row 3  |  fall    |  fall    |  fall    |  fall    |   falling through the air
+row 4  |  sleep   |  sleep   |  sleep   |  sleep   |   asleep
+row 5  |  annoyed |  annoyed |  annoyed |  annoyed |   cross
+row 6  |  drag    |  drag    |  drag    |  drag    |   held up by the mouse
+row 7  |  alert   |  alert   |  alert   |  alert   |   surprised
+row 8  |  sit     |  sit     |  sit     |  sit     |   sitting down
+row 9  |  climb   |  climb   |  climb   |  climb   |   climbing a wall
+```
+
+**Every one of the 40 squares must have artwork in it.** An empty square is not
+an error — the creature just turns invisible for that whole animation, with no
+warning. This is the single most common thing that goes wrong.
+
+## B2. The prompt
+
+Paste this into an image generator. Replace the one line in capitals.
+
+```
+Create a pixel-art sprite sheet on a fully transparent background.
+
+THE CREATURE: A SMALL FRIENDLY RED DRAGON.
+
+Layout — follow exactly:
+- A grid of 4 columns and 10 rows. 40 equal squares. 64x64 pixels per
+  square, so the whole image is 256 pixels wide and 640 pixels tall.
+- Do NOT draw the grid lines. Do NOT write any numbers, labels or text.
+- Transparent background. No ground, no floor, no platform, no shadow,
+  no scenery, no border, no frame.
+- Exactly one creature per square, the same creature every time, the
+  same size every time.
+- The creature FACES RIGHT in every single square.
+- In each square the creature's FEET TOUCH THE BOTTOM EDGE of that
+  square, except in rows 3, 6 and 9 where it is off the ground.
+- Centre the creature left-to-right in its square. A tail may hang off
+  to one side; the body must be centred.
+
+The 10 rows, top to bottom. Each row is a 4-step loop that repeats:
+1. IDLE - standing still, facing right, breathing gently. Small
+   up-and-down movement only. Blink on the last step.
+2. WALK - a 4-step walking cycle, legs swapping, body rising slightly
+   over the planted foot.
+3. RUN - a 4-step run. Body lower and leaning forward, legs further
+   apart, faster-looking than the walk.
+4. FALL - dropping through the air. Limbs out, eyes wide, slight tumble
+   across the 4 steps. Not touching any ground.
+5. SLEEP - lying down curled up, eyes closed, gentle breathing. Small
+   sleepy "z" letters floating above it in the later steps.
+6. ANNOYED - standing, cross, frowning, ears back, stamping or shaking.
+   A small puff of steam above the head.
+7. DRAG - dangling in mid-air as if held up by the scruff of the neck.
+   Arms and legs hanging limp, eyes wide, gently swinging.
+8. ALERT - surprised and pleased, head and ears up, looking right. A
+   small exclamation mark above the head.
+9. SIT - sitting down on its bottom, relaxed and settled. Very small
+   movement only.
+10. CLIMB - climbing a vertical wall that is to its RIGHT. Facing that
+    wall, head tilted up, limbs reaching up and pushing down, body
+    pressed toward the wall. Climbing hand over hand across the 4
+    steps. Feet not on any ground.
+
+Chunky readable pixel art, bold dark outline, flat colours, no
+anti-aliasing, no gradients, no soft shadows.
+```
+
+**Why each rule is there:** the creature is mirrored automatically when it walks
+left, so left-facing art comes out backwards. The bottom edge of each square is
+what gets lined up with your taskbar, so feet off the bottom row make it hover
+or sink. And the tool in the next step finds the creature by looking for a
+transparent gap around it, so a background or a ground plate confuses it.
+
+## B3. Fix the grid
+
+Image generators almost never produce an exact grid. What comes back usually
+has: an opaque background, pictures placed by eye rather than on a grid, a
+little ground plate under each pose, and a picture several times larger than
+pixel art needs to be.
+
+`sheetconv.exe` fixes all four. It sits next to `petpal.exe`. Open the folder
+containing it, type `cmd` in the address bar, press Enter, and run:
+
+```
+sheetconv.exe "C:\path\to\what-the-ai-made.png" out
+```
+
+It prints what it found. This is a real run on a sheet with all four of the
+usual faults:
+
+```
+input      1024x2560
+keyed      white background removed by border flood
+grid       4 columns x 10 rows = 40 cells
+trim       26 px off the bottom of each sprite
+sprites    40 found, largest 140x119, scaled by 0.443
+wrote      out\creature.png  (256x640, 64px cells)
+wrote      out\sprite.toml
+```
+
+**The line to check is the grid line. It must say
+`4 columns x 10 rows = 40 cells`.** If it says anything else, the result is
+wrong even though the tool reported success — it does not know what you were
+aiming for, so it will not complain.
+
+| The grid line says | What happened | Add |
+|---|---|---|
+| `1 columns x 1 rows = 1 cells` | The background is solid, so the whole image looks like one big picture | `--key-white` |
+| Any other wrong count | Two pictures are touching, so they merged | `--cols 4 --rows 10` |
+| `4 columns x 10 rows` but there is a pale sliver under the feet | A ground plate is painted under each pose | `--trim-bottom 12`, then adjust |
+| `no sprites found` | The image is blank, or `--key-white` erased everything | Check you passed the right file |
+
+Most AI output needs all of them at once:
+
+```
+sheetconv.exe input.png out --cols 4 --rows 10 --key-white --trim-bottom 12
+```
+
+For `--trim-bottom`, measure the plate: open the PNG, zoom into one picture, and
+count the pixels from the bottom of the plate up to where the feet actually
+start. Too small leaves a pale sliver under the feet; too big starts eating the
+toes. Run it, look at `out\creature.png`, adjust the number, run it again.
+
+`--key-white` floods in from the edges of the image rather than deleting every
+white pixel, so white **inside** your creature — eyes, teeth, a chest patch — is
+kept.
+
+## B4. The settings file
+
+`sheetconv` writes a starter `sprite.toml`, but it cannot know which row you
+meant as "annoyed". **Replace its contents with exactly this** — it matches the
+layout above with nothing to work out:
 
 ```toml
-image = "creature.png"      # required — filename, same folder
+image = "creature.png"
+frame_width = 64
+frame_height = 64
+
+[anims.idle]
+row = 0
+frame_ms = 240
+
+[anims.walk]
+row = 1
+frame_ms = 90
+
+[anims.run]
+row = 2
+frame_ms = 55
+
+[anims.fall]
+row = 3
+frame_ms = 140
+
+[anims.sleep]
+row = 4
+frame_ms = 480
+
+[anims.annoyed]
+row = 5
+frame_ms = 140
+
+[anims.drag]
+row = 6
+frame_ms = 200
+
+[anims.alert]
+row = 7
+frame_ms = 160
+
+[anims.sit]
+row = 8
+frame_ms = 420
+
+[anims.climb]
+row = 9
+frame_ms = 110
+```
+
+`row = 5` means "use the whole of row 5". Because every row is full, that is all
+you need — no picture numbers anywhere.
+
+If `sheetconv` gave you a cell size other than 64, change **both** `frame_width`
+and `frame_height` to match, and nothing else.
+
+## B5. Install and check
+
+Copy the `out` folder into `%APPDATA%\PetPal\sprites\`, rename it to whatever
+you want the creature called, then **Tray > Sprite** and pick it.
+
+Then walk this list:
+
+- [ ] It appears in the menu — if not, the folder has no `sprite.toml` in it
+- [ ] It is visible — if a pose vanishes, that row of the sheet is empty
+- [ ] It faces the way it is walking — if not, the art was drawn facing left
+- [ ] Its feet are on the taskbar, not floating above or sunk into it
+- [ ] It sits in the middle of where it stands, not off to one side
+
+---
+
+# C. Draw from scratch
+
+Same layout as section B — 4 columns, 10 rows, one animation per row, every
+square filled — but you control the grid, so no converting is needed. Use the
+same `sprite.toml` from B4.
+
+Two frames per animation is enough to start; walk and run look much better with
+6 or 8. If you want different frame counts per row, see the reference below.
+
+---
+
+# Reference
+
+## The three rules that decide whether it looks right
+
+**1. Draw facing right.** PetPal flips the whole square horizontally when the
+creature moves left. This also means asymmetric details — an eyepatch, a
+satchel, lettering — swap sides when it turns around. Keep them central, or
+accept the flip.
+
+**2. Feet on the bottom row of the square.** The bottom edge is what gets lined
+up with the taskbar or a window's edge. Empty rows below the feet make the
+creature hover; feet drawn past the bottom make it sink. This applies to
+`idle`, `walk`, `run`, `sit`, `sleep`, `annoyed` and `alert`. It does **not**
+apply to `fall`, `drag` or `climb` — the creature is off the ground in those
+and can sit anywhere in the square.
+
+**3. Centre the body left-to-right.** The middle of the square is where the
+creature actually *is*. Empty space on one side shifts it off its own standing
+point, which shows up as it hugging one end of a ledge. Centre the body and let
+a tail or a trailing effect be the thing that overhangs.
+
+## The ten animations
+
+Every one is optional. Anything you leave out falls back to `idle`, so a sheet
+with one idle picture already works, and `idle` + `walk` is enough to feel
+alive. The exception is `climb`, which falls back to `walk`.
+
+| Name | When it plays |
+|---|---|
+| `idle` | Standing still. Also the fallback for every other animation. |
+| `walk` | Wandering along a surface. |
+| `run` | Chasing the cursor, and sprinting the length of a ledge. |
+| `fall` | Falling **and** jumping — it is the whole airborne state. |
+| `sleep` | Curled up after the idle timer, or on **Go to sleep**. |
+| `annoyed` | Whole-machine CPU above `cpu_annoy_percent`. |
+| `drag` | While you are holding it with the mouse. |
+| `alert` | Reminders, an app opening, and clicking the pet. |
+| `sit` | Resting. Alternates with `idle`; **Roam** sets how often. |
+| `climb` | Going up the side of a window too tall to jump onto. |
+
+Animations loop, and switching animation restarts at the first picture.
+
+### Drawing `climb`
+
+The least obvious one. It plays when the pet scales the vertical edge of a
+window — the only way it can reach a window whose top is more than 280 pixels
+up. Pictures are never rotated, and the pet keeps facing the window it is
+holding, so:
+
+* Draw the wall as being **in front** of the creature — to its right, since you
+  draw facing right.
+* Head up toward the top edge, limbs reaching and pushing, body pressed in.
+* Feet are not on the ground, so rule 2 does not apply.
+* Two pictures alternating is enough.
+
+If your creature's shape leaves no room for a raised limb, do not force one — a
+stagger works. The built-ins each solved it differently: Pal reaches with both
+forelimbs, Vader staggers his boots because there is nowhere to raise one clear
+of the cape, the mouse bunches all four legs forward, and the monkey goes hand
+over hand.
+
+## Sheet layout rules
+
+Pictures are numbered **left to right, top to bottom, starting at 0**:
+
+```
++----+----+----+----+
+|  0 |  1 |  2 |  3 |
++----+----+----+----+
+|  4 |  5 |  6 |  7 |
++----+----+----+----+
+|  8 |  9 | ...
+```
+
+* The number of columns is `image width / frame_width`, rounded **down**. A
+  stray pixel of padding on the right costs you a whole column.
+* Any square size works, and squares need not be square. Three built-ins use
+  32x32; the monkey uses 36x32 because its arms and tail need the width.
+* Any number of pictures. The built-ins use 52; two is a valid sheet.
+* Must be an **RGBA PNG**. Indexed-colour PNGs are rejected — if your editor
+  saves indexed by default, choose 32-bit / "RGBA" / "true colour + alpha".
+
+## The manifest, in full
+
+```toml
+image = "creature.png"      # required - filename, same folder
 frame_width = 32            # required
 frame_height = 32           # required
 
 [anims.idle]
-frames = [0, 1, 2, 1]       # explicit indices; repeats and any order allowed
+frames = [0, 1, 2, 1]       # explicit numbers; repeats and any order allowed
 frame_ms = 240              # optional, default 120
 
 [anims.walk]
 row = 1                     # shorthand: a whole row...
-count = 6                   # ...or the first `count` cells of it
+count = 6                   # ...or the first `count` squares of it
 frame_ms = 90
 ```
 
 Each animation takes **either** `frames` **or** `row`/`count`. If you give both,
 `frames` wins. `count` defaults to the full row width and is capped at it.
 
-Indices pointing outside the grid are dropped silently, so trimming your sheet
-will not crash anything — the animation just gets shorter.
+Numbers pointing outside the grid are dropped silently, so trimming a sheet will
+not crash anything — the animation just gets shorter.
 
-**An index pointing at an empty cell is not an error, and that is the one to
-watch for.** Nothing warns you; the creature simply becomes invisible for the
-whole of that animation. If a pose disappears in use, count your cells — an 8x6
-grid is 48 cells whether or not you drew in all of them, and it is easy to write
-`38` when the art you meant is at `40`.
+**A number pointing at an empty square is not an error, and that is the one to
+watch for.** Nothing warns you; the creature becomes invisible for that whole
+animation. A 8x6 grid is 48 squares whether or not you drew in all of them, and
+it is easy to write `38` when the art you meant is at `40`.
 
-### A complete manifest
+## The built-in layout
 
-All ten animations on a 52-frame, 8-wide sheet — copy this and renumber:
+**Make a copy to edit...** writes 52 pictures on an 8-wide sheet. Three
+animations share row 4, so this layout needs counting — it exists to match what
+the built-in creatures actually contain, not because it is a good starting
+point. Prefer the one-animation-per-row layout in section B.
 
 ```toml
 image = "creature.png"
@@ -120,11 +394,11 @@ frames = [0, 1, 2, 3, 4, 5, 6, 7]
 frame_ms = 240
 
 [anims.walk]
-row = 1
+frames = [8, 9, 10, 11, 12, 13, 14, 15]
 frame_ms = 65
 
 [anims.run]
-row = 2
+frames = [16, 17, 18, 19, 20, 21, 22, 23]
 frame_ms = 38
 
 [anims.fall]
@@ -156,80 +430,7 @@ frames = [44, 45, 46, 47, 48, 49, 50, 51]
 frame_ms = 85
 ```
 
-That is exactly the layout **Make a copy to edit...** writes out, so you can
-export a built-in and compare against this.
-
-
-## The animations
-
-Ten names are recognised. **Every one is optional: anything you leave out falls
-back to `idle`**, so a sheet with a single idle frame already works, and
-`idle` + `walk` is enough to feel alive.
-
-| Name | When it plays | Frames used by the built-ins | ms |
-|---|---|---|---|
-| `idle` | Standing still. Also the fallback for every other animation. | 8 | 240 |
-| `walk` | Wandering along a surface. | 8 | 65 |
-| `run` | Chasing the cursor, and sprinting the length of a ledge. | 8 | 38 |
-| `fall` | Falling **and** jumping — it is the whole airborne state. | 2 | 140 |
-| `sleep` | Curled up after `sleep_after_idle_secs` of no input. | 6 | 480 |
-| `annoyed` | Whole-machine CPU above `cpu_annoy_percent`. | 4 | 110 |
-| `drag` | While you are holding it with the mouse. | 2 | 200 |
-| `alert` | Reminders, an app opening, and clicking the pet. | 4 | 150 |
-| `sit` | Resting. Alternates with `idle`; `roam` sets how often. | 2 | 420 |
-| `climb` | Going up the side of a window too tall to jump onto. | 8 | 85 |
-
-Frame counts are yours to choose — those are just what the built-ins do. Walk
-and run read much better with 6-8 frames than with 4.
-
-### Drawing `climb`
-
-It is the newest animation and the least obvious, so it is worth its own note.
-
-`climb` plays when the pet scales the vertical edge of a window — the only way
-it can reach a window whose top is more than 280px up. It is the one exception
-to the fallback rule: leave it out and you get **`walk`**, not `idle`, because a
-creature going up a wall should at least be moving its legs.
-
-Frames are never rotated. The pet keeps facing the window it is holding, so:
-
-* Draw the wall as being **in front** of the creature — to its right, since you
-  draw facing right.
-* Head up toward the lip, limbs reaching and pushing, body pressed in.
-* The feet are **not** on the ground, so ignore the bottom-row rule here.
-* Two frames alternating is enough. The built-ins use eight at 85ms.
-
-If your creature's silhouette leaves no room for a raised limb, do not force
-one — a stagger works. The built-ins each solved this differently: Pal reaches
-with both forelimbs, Vader staggers his boots because there is nowhere to raise
-one clear of the cape, the mouse bunches all four legs forward, and the monkey
-goes hand over hand because it is the one drawn with its near-side limbs on top
-of its body.
-
-Animations loop, and switching animation restarts it at frame 0.
-
-
-## Two rules that catch people out
-
-**1. Draw facing right.** PetPal mirrors the whole cell horizontally when the
-creature moves left. Left-facing art comes out backwards. This also means any
-asymmetric detail — an eyepatch, a satchel, lettering — swaps sides when it
-turns around. Keep such details central, or accept the flip.
-
-**2. Put the feet on the bottom row of the cell.** The bottom edge of the cell
-is what gets aligned with the taskbar or window edge. Empty rows below the feet
-make the creature hover; feet hanging past the bottom make it sink. This applies
-to every grounded pose — `idle`, `walk`, `run`, `sit`, `sleep`, `annoyed`,
-`alert`. It does **not** apply to `fall`, `drag` or `climb`, where the creature
-is off the ground and free to sit anywhere in the cell.
-
-And a third worth knowing: **the horizontal centre of the cell is the
-creature's position.** Empty space on one side shifts the creature off its own
-standing point, which shows up as it hugging one end of a ledge. Centre the
-body, and let a tail or trailing effect be the thing that sits off-centre.
-
-
-## Installing it
+## Installing
 
 ```
 %APPDATA%\PetPal\sprites\
@@ -248,48 +449,46 @@ The menu list is rebuilt each time you open it, so a newly added folder appears
 without restarting. To re-read a sheet you have just edited, use **Reload
 config & sprites**.
 
+## If something is wrong
 
-## When something is wrong
-
-A sheet that fails to load never stops PetPal — it falls back to the built-in
-creature and reports the reason in a tray balloon.
+A sheet that fails to load never stops PetPal — it falls back to a built-in and
+reports why in a tray balloon.
 
 | Message | Cause |
 |---|---|
-| `sprite.toml: ...` | TOML syntax error, or a missing required key. |
+| `sprite.toml: ...` | Typo in the settings file, or a missing required line. |
 | `<path>: The system cannot find the file` | `image =` does not match the PNG's filename. |
-| `frame_width and frame_height must be non-zero` | Missing or zero size keys. |
-| `... is NxM, smaller than one WxH frame` | Cell size larger than the image. |
-| `unsupported indexed PNG` | Re-export as RGBA / 32-bit. |
+| `frame_width and frame_height must be non-zero` | Missing or zero size lines. |
+| `... is NxM, smaller than one WxH frame` | Square size is larger than the image. |
+| `unsupported indexed PNG` | Re-save as RGBA / 32-bit. |
 | `Unknown sprite "..."` | `sprite` in config.toml names a folder that is not there. |
 
-If the creature loads but looks wrong, it is almost always the grid: check that
-the PNG's width is an exact multiple of `frame_width`.
-
-Silent faults, which produce no message at all:
+Faults that produce **no message at all**:
 
 | Symptom | Cause |
 |---|---|
-| One animation shows nothing | Its `frames` point at cells you left empty. |
+| One animation shows nothing | Those squares of the sheet are empty. |
+| Nothing appears in the Sprite menu | No `sprite.toml` inside the folder, or the folder is nested one level too deep. |
 | Hovers above every surface | Empty rows below the feet in the grounded poses. |
-| Sinks into the taskbar | Feet drawn past the bottom row. |
-| Hugs one end of a ledge | Body off-centre in the cell; centre it and let the tail overhang. |
+| Sinks into the taskbar | Feet drawn past the bottom of the square. |
+| Hugs one end of a ledge | Body off-centre in its square. |
 | Faces the wrong way | Art drawn facing left. Everything must face right. |
-| Walks up windows | You left out `climb`, so it fell back to `walk`. |
+| Pulses bigger and smaller as it moves | The creature is not the same size in every square. |
+| Walks up windows instead of climbing | You left out `climb`, so it fell back to `walk`. |
 
+If it loads but the grid is visibly wrong, check that the PNG's width divides
+exactly by `frame_width`.
 
 ## Notes and limits
 
-* **Size on screen** is `frame size x scale`, and `scale` (1-6, **Tray > Size**)
-  is global. Design at a cell size that looks right at 3x, or expect users to
-  change it.
-* **Speed** is the `speed` setting in pixels per second, the same for every
-  custom sheet. The built-ins each scale it a little to suit themselves; custom
-  sheets run at 1.0x.
-* **Turning around at ledge ends** assumes the creature occupies roughly the
-  middle three quarters of its cell. A sheet with a lot of empty margin will
-  turn earlier than it looks like it should.
-* **Recolouring** via the `[colors]` block in `config.toml` only affects the
-  built-in creatures. A PNG sheet is used exactly as drawn.
-* Frames are decoded once at load and kept in memory: a sheet costs roughly
-  `cells x frame_width x frame_height x 4` bytes.
+* **Size on screen** is `square size x scale`, and `scale` (1-6, **Tray >
+  Size**) is global. Design at a size that looks right at 3x.
+* **Speed** is the `speed` setting in pixels per second. The built-ins each
+  scale it to suit themselves; custom sheets all run at 1.0x.
+* **Turning around at ledge ends** assumes the creature fills roughly the middle
+  three quarters of its square. A sheet with a lot of empty margin turns earlier
+  than it looks like it should.
+* **Recolouring** via `[colors]` in `config.toml` only affects the built-in
+  creatures. A PNG sheet is used exactly as drawn.
+* Pictures are decoded once at load and kept in memory: a sheet costs about
+  `squares x frame_width x frame_height x 4` bytes.

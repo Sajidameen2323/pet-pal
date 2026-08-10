@@ -264,7 +264,7 @@ fn write_sprite_guide() {
 }
 
 /// The sprite authoring guide, shared with `docs/SPRITES.md`.
-const SPRITE_GUIDE: &str = include_str!("../docs/SPRITES.md");
+pub(crate) const SPRITE_GUIDE: &str = include_str!("../docs/SPRITES.md");
 
 #[cfg(test)]
 mod tests {

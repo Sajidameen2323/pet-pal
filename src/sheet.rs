@@ -284,7 +284,7 @@ pub fn build_icon(set: &SpriteSet) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sprites::{builtin, Kind};
+    use crate::sprites::{builtin, Kind, ANIM_COUNT};
 
     /// Dump every built-in as a sheet under `target/preview/` so a change to
     /// the pose tables can actually be looked at. Developer tooling:
@@ -312,6 +312,87 @@ mod tests {
         std::fs::create_dir_all("assets").unwrap();
         std::fs::write("assets/petpal.ico", &ico).unwrap();
         println!("wrote assets/petpal.ico ({} bytes)", ico.len());
+    }
+
+    /// Pull every ```toml block out of the shipped guide.
+    fn guide_toml_blocks() -> Vec<String> {
+        crate::config::SPRITE_GUIDE
+            .split("```toml")
+            .skip(1)
+            .filter_map(|rest| rest.split_once("```").map(|(body, _)| body.to_string()))
+            .collect()
+    }
+
+    /// Write a blank RGBA sheet of `cols x rows` cells, plus `manifest`, and
+    /// load it back the way the app would.
+    fn load_manifest(manifest: &str, cell: u32, cols: u32, rows: u32, tag: &str) -> SpriteSet {
+        let dir = std::env::temp_dir().join(format!("petpal-guide-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (w, h) = (cols * cell, rows * cell);
+        let rgba = vec![0xFFu8; (w * h * 4) as usize];
+        std::fs::write(dir.join("creature.png"), encode_png(&rgba, w, h).unwrap()).unwrap();
+        std::fs::write(dir.join("sprite.toml"), manifest).unwrap();
+        let set = crate::sprites::load_sheet(&dir)
+            .unwrap_or_else(|e| panic!("guide manifest {tag} does not load: {e}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        set
+    }
+
+    /// The guide is what users hand to an image generator and then copy
+    /// verbatim, so a manifest printed in it that does not actually work is
+    /// worse than no manifest at all — they have no way to tell the difference
+    /// between a bad sheet and bad instructions.
+    #[test]
+    fn the_guide_manifests_are_real() {
+        let blocks = guide_toml_blocks();
+        assert!(blocks.len() >= 3, "expected the guide to print several manifests");
+        for (i, b) in blocks.iter().enumerate() {
+            toml::from_str::<toml::Table>(b)
+                .unwrap_or_else(|e| panic!("guide toml block {i} is not valid TOML: {e}"));
+        }
+
+        // The beginner layout: 4 columns, 10 rows, one animation per row, so
+        // every clip must come out as a full row of four and nothing has to be
+        // counted by hand. That property is the whole reason it is recommended.
+        let simple = blocks
+            .iter()
+            .find(|b| b.contains("frame_width = 64"))
+            .expect("guide should print the 4x10 beginner manifest");
+        let set = load_manifest(simple, 64, 4, 10, "simple");
+        for a in Anim::ALL {
+            assert_eq!(
+                set.frame_count(a),
+                4,
+                "{a:?} should be a full row of 4 in the beginner layout"
+            );
+        }
+        // Ten distinct rows: no animation may share artwork with another, or
+        // the sheet the user was told to draw is bigger than it needs to be.
+        let mut firsts: Vec<u16> = Anim::ALL.iter().map(|&a| set.clip(a).idx[0]).collect();
+        firsts.sort_unstable();
+        firsts.dedup();
+        assert_eq!(firsts.len(), ANIM_COUNT, "each animation needs its own row");
+
+        // The built-in layout, which has to match what export actually writes.
+        let full = blocks
+            .iter()
+            .find(|b| b.contains("frames = [44,"))
+            .expect("guide should print the 52-frame built-in manifest");
+        let set = load_manifest(full, 32, 8, 7, "full");
+        let reference = builtin(Kind::Pal, &Kind::Pal.palette());
+        for a in Anim::ALL {
+            assert_eq!(
+                set.frame_count(a),
+                reference.frame_count(a),
+                "{a:?} frame count in the guide does not match the built-in"
+            );
+            assert_eq!(
+                set.clip(a).idx,
+                reference.clip(a).idx,
+                "{a:?} frame numbers in the guide do not match what export writes"
+            );
+        }
     }
 
     /// Every built-in must actually draw every animation, and its climb has to
