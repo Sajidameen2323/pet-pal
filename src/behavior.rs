@@ -654,6 +654,8 @@ impl Pet {
             self.y as i32,
             CLIMB_SEEK_DX,
             CLIMB_MIN_GAIN,
+            self.reach(),
+            CLIMB_GRAB_DX,
         ) else {
             return false;
         };
@@ -668,6 +670,21 @@ impl Pet {
         self.approach_wall(w, ctx)
     }
 
+    /// The span of x the creature can stand on, on its current surface.
+    ///
+    /// It keeps half a body width from each end, so this is narrower than the
+    /// surface. Anything outside it is somewhere the creature can look at but
+    /// never occupy.
+    fn reach(&self) -> (i32, i32) {
+        match self.ledge {
+            Some(l) => {
+                let (lo, hi) = (l.x0 + self.margin, l.x1 - self.margin);
+                if lo <= hi { (lo, hi) } else { ((l.x0 + l.x1) / 2, (l.x0 + l.x1) / 2) }
+            }
+            None => (i32::MIN / 2, i32::MAX / 2),
+        }
+    }
+
     /// Carry on toward an edge already chosen, if it is still worth reaching.
     ///
     /// Everything that could have changed underneath the plan is rechecked
@@ -678,9 +695,13 @@ impl Pet {
         let Some(goal) = self.climb_goal else {
             return false;
         };
+        let reach = self.reach();
         let stale = !ctx.cfg.jump_between_windows
             || !self.grounded
             || self.climb_goal_ms > CLIMB_APPROACH_TIMEOUT_MS
+            // Windows move; an edge that was reachable from the old surface
+            // may not be from this one.
+            || (goal.x.clamp(reach.0, reach.1) - goal.x).abs() > CLIMB_GRAB_DX
             || ctx.world.wall_at(goal.x, self.y as i32).is_none()
             || !(self.ledge.is_some_and(|l| l.holds(goal.x))
                 || (goal.x as f32 - self.x).abs() <= CLIMB_GRAB_DX as f32);
@@ -2050,6 +2071,75 @@ mod tests {
                     if jump { "on" } else { "off" },
                 );
             }
+        }
+    }
+
+    /// A maximised window must not pin the creature to the screen edge.
+    ///
+    /// Reported as pacing back and forth near the corner "like 100 times",
+    /// and only when something was running fullscreen. That last detail is the
+    /// whole diagnosis: a maximised window puts its climbable edges exactly on
+    /// the screen edges, and the creature stands half a body width from the end
+    /// of a surface, so it can never get the 14px from one that taking hold
+    /// requires. It walked at the edge, was clamped by `confine_to_ledge`,
+    /// turned around, and aimed at the same edge on the very next decision —
+    /// 136 turns in three minutes, 133 of 180 seconds spent within 150px of the
+    /// screen edge.
+    ///
+    /// Offering an unreachable edge is worse than offering none, so the world
+    /// no longer offers one.
+    #[test]
+    fn a_fullscreen_window_does_not_trap_the_creature() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let mut cfg = Config::default();
+        cfg.chase_cursor = false;
+        cfg.sleep_after_idle_secs = 86_400;
+        cfg.cpu_annoy_percent = 100;
+
+        let mut w = World::for_test(
+            vec![Monitor {
+                rect: RECT { left: 0, top: 0, right: 1920, bottom: 1080 },
+                work: RECT { left: 0, top: 0, right: 1920, bottom: 1035 },
+            }],
+            vec![
+                Ledge { x0: 0, x1: 1920, y: 1035 },
+                Ledge { x0: 0, x1: 1920, y: 0 },
+            ],
+        );
+        w.walls = vec![
+            Wall { x: 0, y_top: 0, y_bottom: 1035, inward: 1 },
+            Wall { x: 1920, y_top: 0, y_bottom: 1035, inward: -1 },
+        ];
+
+        for seed in [1u64, 2, 3, 8, 21] {
+            let (mut pet, mut rng) = settle_on_seeded(&set, &cfg, &w, 700.0, 1000.0, seed);
+            let mut turns = 0;
+            let mut facing = pet.facing;
+            let mut pinned = 0;
+            for _ in 0..7_200 {
+                // three minutes
+                let mut ctx = Ctx {
+                    world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
+                    idle_ms: 0, cfg: &cfg, rng: &mut rng,
+                };
+                pet.update(25, &mut ctx, &set);
+                if pet.facing != facing {
+                    turns += 1;
+                    facing = pet.facing;
+                }
+                if pet.x < 150.0 || pet.x > 1770.0 {
+                    pinned += 1;
+                }
+            }
+            assert!(
+                turns <= 30,
+                "seed {seed}: turned around {turns} times in three minutes"
+            );
+            let pinned_s = pinned as f32 * 0.025;
+            assert!(
+                pinned_s <= 90.0,
+                "seed {seed}: spent {pinned_s:.0}s of 180 stuck against a screen edge"
+            );
         }
     }
 }

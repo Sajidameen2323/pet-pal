@@ -267,7 +267,24 @@ impl World {
     ///
     /// `min_gain` keeps it from grabbing an edge whose top is barely above the
     /// creature, which would be a jump, not a climb.
-    pub fn wall_near(&self, x: i32, y: i32, max_dx: i32, min_gain: i32) -> Option<Wall> {
+    ///
+    /// `reach` is the span of `x` the creature can actually occupy — the ends
+    /// of its surface, less half its body. An edge outside that span by more
+    /// than `grab` can never be taken hold of, and offering one is worse than
+    /// offering none: the creature walks at it, gets clamped at the end of the
+    /// surface, is turned around, and aims at the same edge again on the next
+    /// decision. A maximised window puts its edges exactly on the screen edges,
+    /// which is precisely this case — so the symptom only appeared when
+    /// something was running fullscreen.
+    pub fn wall_near(
+        &self,
+        x: i32,
+        y: i32,
+        max_dx: i32,
+        min_gain: i32,
+        reach: (i32, i32),
+        grab: i32,
+    ) -> Option<Wall> {
         self.walls
             .iter()
             .filter(|w| {
@@ -276,6 +293,7 @@ impl World {
                     // The edge has to reach down to where the creature is
                     // standing, or there is nothing to take hold of.
                     && w.y_bottom >= y - 8
+                    && (w.x.clamp(reach.0, reach.1) - w.x).abs() <= grab
             })
             // Nearest first, so it does not cross the screen past a usable edge.
             .min_by_key(|w| (w.x - x).abs())
