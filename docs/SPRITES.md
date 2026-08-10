@@ -48,79 +48,107 @@ end.
 
 ## B1. The sheet you are asking for
 
-**4 columns across, 10 rows down. One animation per row. 4 pictures per row.
-40 pictures total.**
+**One single image. 8 squares across, 6 squares down. 48 squares in total.**
 
-One animation per row is the point: you never have to count picture numbers,
-and the settings file below is the same every time.
+Ask for 8x6 rather than some other shape because 8x6 is a 4:3 picture, which is
+a shape image generators are good at. Tall thin sheets come back distorted.
+
+At 128 pixels per square that is a 1024x768 image, a size every generator
+handles. The converter in step B3 shrinks it to the 64-pixel squares PetPal
+wants, so ask big and let the tool reduce it.
+
+This is the exact map. The numbers inside are square numbers, and **squares
+count from 0** — that is how the file format numbers them, and it is what the
+settings file in B4 refers to. The rows are counted from 1 in the prompt below,
+the way a person would read them.
 
 ```
-            col 0     col 1     col 2     col 3
-row 0  |  idle    |  idle    |  idle    |  idle    |   standing still
-row 1  |  walk    |  walk    |  walk    |  walk    |   walking
-row 2  |  run     |  run     |  run     |  run     |   running
-row 3  |  fall    |  fall    |  fall    |  fall    |   falling through the air
-row 4  |  sleep   |  sleep   |  sleep   |  sleep   |   asleep
-row 5  |  annoyed |  annoyed |  annoyed |  annoyed |   cross
-row 6  |  drag    |  drag    |  drag    |  drag    |   held up by the mouse
-row 7  |  alert   |  alert   |  alert   |  alert   |   surprised
-row 8  |  sit     |  sit     |  sit     |  sit     |   sitting down
-row 9  |  climb   |  climb   |  climb   |  climb   |   climbing a wall
+             1st  2nd  3rd  4th  | 5th  6th  7th  8th
+    row 1 |    0    1    2    3       4    5    6    7  |  IDLE, all 8
+    row 2 |    8    9   10   11      12   13   14   15  |  WALK, all 8
+    row 3 |   16   17   18   19      20   21   22   23  |  RUN, all 8
+    row 4 |   24   25   26   27   |  28   29   30   31  |  CLIMB 4 | FALL 4
+    row 5 |   32   33   34   35   |  36   37   38   39  |  SLEEP 4 | ANNOYED 4
+    row 6 |   40   41   42   43   |  44   45 | 46   47  |  ALERT 4 | SIT 2 | HELD 2
 ```
 
-**Every one of the 40 squares must have artwork in it.** An empty square is not
+The first three rows are one animation each. The last three are split, because
+ten animations do not divide evenly into six rows — but you never have to work
+any of it out, because the settings file in B4 already has the numbers.
+
+**Every one of the 48 squares must have artwork in it.** An empty square is not
 an error — the creature just turns invisible for that whole animation, with no
 warning. This is the single most common thing that goes wrong.
 
 ## B2. The prompt
 
-Paste this into an image generator. Replace the one line in capitals.
+Paste this into an image generator. Change only the line in capitals.
 
 ```
-Create a pixel-art sprite sheet on a fully transparent background.
+Generate ONE single image: a complete pixel-art sprite sheet.
+Do not give me separate images. Everything must be in one picture.
 
 THE CREATURE: A SMALL FRIENDLY RED DRAGON.
 
-Layout — follow exactly:
-- A grid of 4 columns and 10 rows. 40 equal squares. 64x64 pixels per
-  square, so the whole image is 256 pixels wide and 640 pixels tall.
-- Do NOT draw the grid lines. Do NOT write any numbers, labels or text.
-- Transparent background. No ground, no floor, no platform, no shadow,
-  no scenery, no border, no frame.
-- Exactly one creature per square, the same creature every time, the
-  same size every time.
-- The creature FACES RIGHT in every single square.
-- In each square the creature's FEET TOUCH THE BOTTOM EDGE of that
-  square, except in rows 3, 6 and 9 where it is off the ground.
-- Centre the creature left-to-right in its square. A tail may hang off
-  to one side; the body must be centred.
+SIZE AND GRID - follow exactly:
+- One image, 1024 pixels wide and 768 pixels tall.
+- Divided into a grid of 8 columns and 6 rows = 48 equal squares,
+  each 128x128 pixels.
+- Do NOT draw the grid lines. Do NOT write any numbers, labels,
+  captions or text anywhere in the image.
+- Fully transparent background. No ground, no floor, no platform,
+  no shadow, no scenery, no border, no frame, no colour behind
+  the creature.
+- Exactly one creature in every square. All 48 squares are used.
+- It is the SAME creature at the SAME size in every square.
+- The creature FACES RIGHT in every single square. Never left.
+- Its FEET TOUCH THE BOTTOM EDGE of its square, except in the
+  squares listed below as off the ground.
+- Centre it left-to-right in its square. A tail may hang to one
+  side, but the body is centred.
 
-The 10 rows, top to bottom. Each row is a 4-step loop that repeats:
-1. IDLE - standing still, facing right, breathing gently. Small
-   up-and-down movement only. Blink on the last step.
-2. WALK - a 4-step walking cycle, legs swapping, body rising slightly
-   over the planted foot.
-3. RUN - a 4-step run. Body lower and leaning forward, legs further
-   apart, faster-looking than the walk.
-4. FALL - dropping through the air. Limbs out, eyes wide, slight tumble
-   across the 4 steps. Not touching any ground.
-5. SLEEP - lying down curled up, eyes closed, gentle breathing. Small
-   sleepy "z" letters floating above it in the later steps.
-6. ANNOYED - standing, cross, frowning, ears back, stamping or shaking.
-   A small puff of steam above the head.
-7. DRAG - dangling in mid-air as if held up by the scruff of the neck.
-   Arms and legs hanging limp, eyes wide, gently swinging.
-8. ALERT - surprised and pleased, head and ears up, looking right. A
-   small exclamation mark above the head.
-9. SIT - sitting down on its bottom, relaxed and settled. Very small
-   movement only.
-10. CLIMB - climbing a vertical wall that is to its RIGHT. Facing that
-    wall, head tilted up, limbs reaching up and pushing down, body
-    pressed toward the wall. Climbing hand over hand across the 4
-    steps. Feet not on any ground.
+WHAT GOES IN EACH SQUARE, reading left to right, top to bottom:
 
-Chunky readable pixel art, bold dark outline, flat colours, no
-anti-aliasing, no gradients, no soft shadows.
+Row 1, all 8 squares - IDLE: standing still, breathing gently.
+  Only a small up-and-down movement across the 8 steps. Blink near
+  the end. This is a loop.
+
+Row 2, all 8 squares - WALKING: a smooth 8-step walk cycle. Legs
+  swap over, the body rises slightly over the planted foot. Loops.
+
+Row 3, all 8 squares - RUNNING: an 8-step run. Body lower and
+  leaning forward, legs reaching further, clearly faster than the
+  walk. Loops.
+
+Row 4, squares 1-4 - CLIMBING a wall that is to its RIGHT: facing
+  that wall, head tilted up, limbs reaching up and pushing down,
+  body pressed toward the wall, moving hand over hand. Off the
+  ground - feet do not touch the bottom of the square.
+
+Row 4, squares 5-8 - FALLING through the air: limbs out, eyes
+  wide, alarmed, tumbling slightly. Off the ground.
+
+Row 5, squares 1-4 - ASLEEP: lying down curled up, eyes closed,
+  gentle breathing. Small sleepy "z" letters floating above it in
+  the later squares.
+
+Row 5, squares 5-8 - ANNOYED: standing, cross, frowning, ears
+  back, stamping or shaking with irritation. A small puff of steam
+  above the head.
+
+Row 6, squares 1-4 - SURPRISED and pleased: head and ears up,
+  looking right, delighted. A small exclamation mark above the
+  head.
+
+Row 6, squares 5-6 - SITTING DOWN on its bottom, relaxed and
+  settled. Only a tiny movement between the two.
+
+Row 6, squares 7-8 - BEING HELD UP in mid-air by the scruff of
+  the neck: arms and legs hanging limp, eyes wide, swinging
+  gently. Off the ground.
+
+STYLE: chunky readable pixel art, bold dark outline, flat colours,
+no anti-aliasing, no gradients, no soft shadows.
 ```
 
 **Why each rule is there:** the creature is mirrored automatically when it walks
@@ -128,6 +156,11 @@ left, so left-facing art comes out backwards. The bottom edge of each square is
 what gets lined up with your taskbar, so feet off the bottom row make it hover
 or sink. And the tool in the next step finds the creature by looking for a
 transparent gap around it, so a background or a ground plate confuses it.
+
+**Generators are bad at exact grids.** Expect the first attempt to be off. The
+next step fixes placement, background and size — what it cannot fix is a missing
+pose or a creature that changes size between squares, so check for those and ask
+again if you see them.
 
 ## B3. Fix the grid
 
@@ -143,36 +176,50 @@ containing it, type `cmd` in the address bar, press Enter, and run:
 sheetconv.exe "C:\path\to\what-the-ai-made.png" out
 ```
 
-It prints what it found. This is a real run on a sheet with all four of the
-usual faults:
+On typical generator output that plain run prints this, and it is **wrong**:
 
 ```
-input      1024x2560
-keyed      white background removed by border flood
-grid       4 columns x 10 rows = 40 cells
-trim       26 px off the bottom of each sprite
-sprites    40 found, largest 140x119, scaled by 0.443
-wrote      out\creature.png  (256x640, 64px cells)
+input      1024x768
+grid       1 columns x 1 rows = 1 cells
+sprites    1 found, largest 1024x768, scaled by 0.061
+wrote      out\creature.png  (64x64, 64px cells)
 wrote      out\sprite.toml
 ```
 
+It says `wrote`, so it looks like it worked. It did not. The background was
+solid, so the whole image read as one enormous creature, and the entire sheet
+has been squashed into a single 64x64 square.
+
 **The line to check is the grid line. It must say
-`4 columns x 10 rows = 40 cells`.** If it says anything else, the result is
-wrong even though the tool reported success — it does not know what you were
-aiming for, so it will not complain.
+`8 columns x 6 rows = 48 cells`.** Nothing else matters until it does. The tool
+has no idea what you were aiming for, so it will never complain — a wrong result
+still ends in `wrote`.
 
 | The grid line says | What happened | Add |
 |---|---|---|
 | `1 columns x 1 rows = 1 cells` | The background is solid, so the whole image looks like one big picture | `--key-white` |
-| Any other wrong count | Two pictures are touching, so they merged | `--cols 4 --rows 10` |
-| `4 columns x 10 rows` but there is a pale sliver under the feet | A ground plate is painted under each pose | `--trim-bottom 12`, then adjust |
+| Any other wrong count | Two pictures are touching, so they merged | `--cols 8 --rows 6` |
+| `8 columns x 6 rows` but there is a pale sliver under the feet | A ground plate is painted under each pose | `--trim-bottom 13`, then adjust |
 | `no sprites found` | The image is blank, or `--key-white` erased everything | Check you passed the right file |
 
-Most AI output needs all of them at once:
+Most AI output needs all of them at once. Here is the same image again, done
+properly:
 
 ```
-sheetconv.exe input.png out --cols 4 --rows 10 --key-white --trim-bottom 12
+sheetconv.exe input.png out --cols 8 --rows 6 --key-white --trim-bottom 13
 ```
+
+```
+input      1024x768
+keyed      white background removed by border flood
+grid       8 columns x 6 rows = 48 cells
+trim       13 px off the bottom of each sprite
+sprites    48 found, largest 72x61, scaled by 0.862
+wrote      out\creature.png  (512x384, 64px cells)
+wrote      out\sprite.toml
+```
+
+`48 found` and a `512x384` sheet — that is the one you want.
 
 For `--trim-bottom`, measure the plate: open the PNG, zoom into one picture, and
 count the pixels from the bottom of the plate up to where the feet actually
@@ -185,9 +232,9 @@ kept.
 
 ## B4. The settings file
 
-`sheetconv` writes a starter `sprite.toml`, but it cannot know which row you
-meant as "annoyed". **Replace its contents with exactly this** — it matches the
-layout above with nothing to work out:
+`sheetconv` writes a starter `sprite.toml`, but it cannot know which squares you
+meant as "annoyed". **Delete what it wrote and paste exactly this** — it matches
+the map in B1, so there is nothing to work out:
 
 ```toml
 image = "creature.png"
@@ -206,40 +253,45 @@ frame_ms = 90
 row = 2
 frame_ms = 55
 
+[anims.climb]
+frames = [24, 25, 26, 27]
+frame_ms = 110
+
 [anims.fall]
-row = 3
+frames = [28, 29, 30, 31]
 frame_ms = 140
 
 [anims.sleep]
-row = 4
+frames = [32, 33, 34, 35]
 frame_ms = 480
 
 [anims.annoyed]
-row = 5
+frames = [36, 37, 38, 39]
 frame_ms = 140
 
-[anims.drag]
-row = 6
-frame_ms = 200
-
 [anims.alert]
-row = 7
+frames = [40, 41, 42, 43]
 frame_ms = 160
 
 [anims.sit]
-row = 8
+frames = [44, 45]
 frame_ms = 420
 
-[anims.climb]
-row = 9
-frame_ms = 110
+[anims.drag]
+frames = [46, 47]
+frame_ms = 200
 ```
 
-`row = 5` means "use the whole of row 5". Because every row is full, that is all
-you need — no picture numbers anywhere.
+`row = 1` means "the whole of row 1", which is why the first three animations
+need no numbers. The rest name their squares directly, and between them they use
+all 48 exactly once.
 
-If `sheetconv` gave you a cell size other than 64, change **both** `frame_width`
-and `frame_height` to match, and nothing else.
+If `sheetconv` reported a cell size other than 64, change **both**
+`frame_width` and `frame_height` to that number, and nothing else. Do not change
+the frame numbers — they are positions in the grid, not pixel sizes.
+
+`frame_ms` is how long each square is shown, in thousandths of a second. Lower
+is faster. Adjust to taste; nothing breaks.
 
 ## B5. Install and check
 
@@ -249,7 +301,8 @@ you want the creature called, then **Tray > Sprite** and pick it.
 Then walk this list:
 
 - [ ] It appears in the menu — if not, the folder has no `sprite.toml` in it
-- [ ] It is visible — if a pose vanishes, that row of the sheet is empty
+- [ ] Every pose is visible — if one vanishes, those squares of the sheet are
+      empty. Watch it for a minute, or drag it about to force the poses.
 - [ ] It faces the way it is walking — if not, the art was drawn facing left
 - [ ] Its feet are on the taskbar, not floating above or sunk into it
 - [ ] It sits in the middle of where it stands, not off to one side
@@ -258,12 +311,15 @@ Then walk this list:
 
 # C. Draw from scratch
 
-Same layout as section B — 4 columns, 10 rows, one animation per row, every
-square filled — but you control the grid, so no converting is needed. Use the
-same `sprite.toml` from B4.
+You control the grid, so nothing needs converting. Two options:
 
-Two frames per animation is enough to start; walk and run look much better with
-6 or 8. If you want different frame counts per row, see the reference below.
+* **Use the B1 map** — 8 across, 6 down, 64x64 squares, image 512x384 — and the
+  `sprite.toml` from B4 works unchanged.
+* **Make up your own layout** and write the manifest yourself. See the manifest
+  reference below; you can put any animation on any squares.
+
+Two pictures per animation is enough to start. Walk and run look much better
+with 6 or 8.
 
 ---
 

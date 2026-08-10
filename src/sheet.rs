@@ -352,32 +352,60 @@ mod tests {
                 .unwrap_or_else(|e| panic!("guide toml block {i} is not valid TOML: {e}"));
         }
 
-        // The beginner layout: 4 columns, 10 rows, one animation per row, so
-        // every clip must come out as a full row of four and nothing has to be
-        // counted by hand. That property is the whole reason it is recommended.
+        // The beginner layout: an 8x6 sheet, 48 squares, described cell by cell
+        // in the prompt users paste into an image generator. The manifest and
+        // that description have to agree, and the only way they can is if the
+        // 48 squares are partitioned — every square claimed, by exactly one
+        // animation. A gap means the user drew a pose nothing plays; an overlap
+        // means two animations show the same art.
         let simple = blocks
             .iter()
             .find(|b| b.contains("frame_width = 64"))
-            .expect("guide should print the 4x10 beginner manifest");
-        let set = load_manifest(simple, 64, 4, 10, "simple");
-        for a in Anim::ALL {
+            .expect("guide should print the 8x6 beginner manifest");
+        let set = load_manifest(simple, 64, 8, 6, "simple");
+
+        let expected = [
+            (Anim::Idle, 8),
+            (Anim::Walk, 8),
+            (Anim::Run, 8),
+            (Anim::Climb, 4),
+            (Anim::Fall, 4),
+            (Anim::Sleep, 4),
+            (Anim::Annoyed, 4),
+            (Anim::Alert, 4),
+            (Anim::Sit, 2),
+            (Anim::Drag, 2),
+        ];
+        assert_eq!(expected.len(), ANIM_COUNT, "every animation must be listed");
+        let mut claimed: Vec<u16> = Vec::new();
+        for (a, n) in expected {
             assert_eq!(
                 set.frame_count(a),
-                4,
-                "{a:?} should be a full row of 4 in the beginner layout"
+                n,
+                "{a:?} should use {n} squares in the 8x6 layout"
             );
+            claimed.extend_from_slice(&set.clip(a).idx);
         }
-        // Ten distinct rows: no animation may share artwork with another, or
-        // the sheet the user was told to draw is bigger than it needs to be.
-        let mut firsts: Vec<u16> = Anim::ALL.iter().map(|&a| set.clip(a).idx[0]).collect();
-        firsts.sort_unstable();
-        firsts.dedup();
-        assert_eq!(firsts.len(), ANIM_COUNT, "each animation needs its own row");
+        claimed.sort_unstable();
+        let unique = {
+            let mut c = claimed.clone();
+            c.dedup();
+            c
+        };
+        assert_eq!(claimed.len(), unique.len(), "two animations share a square");
+        assert_eq!(
+            unique,
+            (0..48u16).collect::<Vec<_>>(),
+            "the manifest must claim all 48 squares of the 8x6 sheet exactly once"
+        );
 
         // The built-in layout, which has to match what export actually writes.
+        // Matched on the run row, which only the 52-frame layout spells out —
+        // the 8x6 one uses `row = 2`. Matching on something both contain (both
+        // have a `frames = [44,` line) silently tests the wrong block.
         let full = blocks
             .iter()
-            .find(|b| b.contains("frames = [44,"))
+            .find(|b| b.contains("frames = [16, 17, 18"))
             .expect("guide should print the 52-frame built-in manifest");
         let set = load_manifest(full, 32, 8, 7, "full");
         let reference = builtin(Kind::Pal, &Kind::Pal.palette());
