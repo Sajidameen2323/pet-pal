@@ -32,17 +32,37 @@ understanding what the window is doing on your behalf.
 **Tray > Sprite > Add a sprite...**
 
 1. **Drop your PNG on the window**, or click Browse.
-2. **Check the cell size.** It guesses, and shows the grid over your sheet so
-   you can see whether the guess landed. If the lines do not sit between the
-   pictures, correct the two numbers and watch the grid move.
-3. **Pick an animation on the right**, then **click the cells** that make it up,
+2. **It fixes the sheet for you.** Straight out of an image generator, a sheet
+   has its poses placed by eye, wide margins, often a little ground plate under
+   each one, and is several times larger than the pixel art it depicts —
+   slicing that on any cell size cuts creatures in half. The window finds where
+   the poses actually are and re-lays them on a real grid, feet on the bottom
+   row of each cell, removing an opaque background if there is one. It says
+   what it did in the line at the top right.
+
+   A sheet that is *already* on an exact grid is left alone, because fitting
+   resamples and would soften art somebody drew correctly.
+
+   The **2. Fix** row is there when the automatic answer is wrong:
+
+   | Control | Use it when |
+   |---|---|
+   | **trim base** | A ground plate or shadow is painted under each pose. Put in its height in source pixels, press Fit to grid, look, adjust. |
+   | **remove bg** | The background survived, or removing it ate the creature's edges. It is a tolerance: higher removes more. Blank means "decide for me". |
+   | **cols / rows** | The detected grid is wrong because two poses are touching. Blank means detect, which is nearly always right — forcing them splits the *whole image* evenly and goes wrong the moment the sheet has margins. |
+   | **Use original** | You want the file exactly as it is, no fitting at all. |
+
+3. **Check the cell size.** The grid is drawn over your sheet so you can see
+   whether it landed. If the lines do not sit between the pictures, correct the
+   two numbers and watch the grid move.
+4. **Pick an animation on the right**, then **click the cells** that make it up,
    in the order they should play. Each cell you click shows its position in the
    animation rather than its number, so the order is visible as you work.
    Clicking a picked cell again removes it; dragging across cells adds a run of
    them. Cells another animation already uses are outlined in blue.
-4. Watch the **preview at the bottom right** — it plays the selected animation
+5. Watch the **preview at the bottom right** — it plays the selected animation
    at the speed in the "ms per frame" box.
-5. **Name it** and press **Add sprite**. The folder is written and the pet puts
+6. **Name it** and press **Add sprite**. The folder is written and the pet puts
    it on immediately.
 
 `idle` is the only animation that must have frames; everything else falls back
@@ -193,6 +213,10 @@ pose or a creature that changes size between squares, so check for those and ask
 again if you see them.
 
 ## B3. Fix the grid
+
+**The window does this for you** — drop the generated PNG on **Tray > Sprite >
+Add a sprite...** and it fits the grid on load, then you click the cells. The
+rest of this section is the command-line equivalent, for batches or scripting.
 
 Image generators almost never produce an exact grid. What comes back usually
 has: an opaque background, pictures placed by eye rather than on a grid, a

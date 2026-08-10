@@ -90,12 +90,22 @@ move like the same creature wearing different clothes: the mouse skitters at
 
 ### Making your own
 
-**Sprite → Add a sprite...** opens a window that takes a PNG sheet, draws the
-frame grid over it, and lets you click the cells that belong to each animation
-— in playback order, with a live preview — then writes `creature.png` and
-`sprite.toml` and switches the pet to it. No frame numbers are typed at any
-point, which is where hand-written manifests usually go wrong: an index into an
-empty cell is not an error, it just makes the creature invisible.
+**Sprite → Add a sprite...** opens a window that does the whole job. Drop a PNG
+on it and it **fits the sheet to a real grid first** — generator output has its
+poses placed by eye, with margins, ground plates and at several times the
+resolution the pixel art needs, so slicing it on any cell size cuts creatures in
+half. It finds where the poses actually are, re-lays them feet-on-the-bottom-row,
+and strips an opaque background if there is one. A sheet already on an exact grid
+is left untouched.
+
+Then you click the cells that belong to each animation, in playback order, with
+a live preview, and it writes `creature.png` + `sprite.toml` and switches the pet
+to it. No frame numbers are typed at any point, which is where hand-written
+manifests usually go wrong: an index into an empty cell is not an error, it just
+makes the creature invisible.
+
+The same fitting is available as [`sheetconv`](tools/sheetconv/) on the command
+line for batches — one implementation, included by both.
 
 **Sprite → Make a copy to edit...** writes the creature you are currently using
 out as a real sprite sheet — `creature.png` plus a `sprite.toml` — into

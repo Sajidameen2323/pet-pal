@@ -22,6 +22,7 @@ mod config;
 mod monkey;
 mod mouse;
 mod platforms;
+mod regrid;
 mod render;
 mod reminders;
 mod sheet;

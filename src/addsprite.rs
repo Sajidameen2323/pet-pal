@@ -55,13 +55,13 @@ pub fn take_added() -> Option<String> {
 // Layout
 // ---------------------------------------------------------------------------
 
-const WIN_W: i32 = 1020;
+const WIN_W: i32 = 1090;
 const WIN_H: i32 = 700;
 /// Width of the right-hand column of controls.
 const PANEL_W: i32 = 300;
 const PAD: i32 = 12;
 /// Height of the two rows of controls above the sheet.
-const HEAD_H: i32 = 72;
+const HEAD_H: i32 = 108;
 const FOOT_H: i32 = 46;
 
 const ID_BROWSE: isize = 1001;
@@ -75,6 +75,12 @@ const ID_CLEAR: isize = 1008;
 const ID_ADD: isize = 1009;
 const ID_CANCEL: isize = 1010;
 const ID_GUESS: isize = 1011;
+const ID_FIT: isize = 1012;
+const ID_ORIGINAL: isize = 1013;
+const ID_TRIM: isize = 1014;
+const ID_BG: isize = 1015;
+const ID_COLS: isize = 1016;
+const ID_ROWS: isize = 1017;
 
 const TIMER_PLAY: usize = 1;
 
@@ -121,6 +127,18 @@ struct Editor {
     path_label: HWND,
     hint: HWND,
     frames_label: HWND,
+    trim_edit: HWND,
+    bg_edit: HWND,
+    cols_edit: HWND,
+    rows_edit: HWND,
+
+    /// The PNG exactly as loaded. Kept so re-fitting with different settings
+    /// always starts from the original rather than compounding resamples.
+    orig: Vec<u32>,
+    orig_w: i32,
+    orig_h: i32,
+    /// True when `px` is a fitted version rather than the file itself.
+    fitted: bool,
 
     src: Option<PathBuf>,
     /// Straight ARGB, as decoded. Kept unpremultiplied so the checkerboard
@@ -409,37 +427,53 @@ unsafe fn build(hwnd: HWND) -> Editor {
             h_
         };
 
-        // -- row 1: source image ------------------------------------------
-        mk("STATIC", "Sheet:", SS_LEFT, PAD, PAD + 4, 46, 20, 0);
+        // -- row 1: the file --------------------------------------------
+        mk("STATIC", "1. Sheet", SS_LEFT, PAD, PAD + 4, 60, 20, 0);
         let path_label = mk(
             "STATIC",
-            "drop a PNG here, or click Browse",
+            "drop a PNG anywhere on this window, or click Browse",
             SS_LEFT | SS_PATHELLIPSIS,
-            PAD + 50,
+            PAD + 66,
             PAD + 4,
-            520,
+            528,
             20,
             0,
         );
-        mk("BUTTON", "Browse...", BS_PUSH, PAD + 580, PAD, 90, 26, ID_BROWSE);
+        mk("BUTTON", "Browse...", BS_PUSH, PAD + 604, PAD, 100, 27, ID_BROWSE);
 
-        // -- row 2: grid + name -------------------------------------------
-        mk("STATIC", "Cell size:", SS_LEFT, PAD, PAD + 40, 66, 20, 0);
-        let cw_edit = mk("EDIT", "64", ES_NUMBER_ | WS_BORDER, PAD + 68, PAD + 36, 52, 24, ID_CELL_W);
-        mk("STATIC", "x", SS_CENTER, PAD + 124, PAD + 40, 12, 20, 0);
-        let ch_edit = mk("EDIT", "64", ES_NUMBER_ | WS_BORDER, PAD + 140, PAD + 36, 52, 24, ID_CELL_H);
-        mk("BUTTON", "Guess", BS_PUSH, PAD + 200, PAD + 36, 62, 24, ID_GUESS);
+        // -- row 2: tidying a generated sheet -----------------------------
+        let y2 = PAD + 33;
+        mk("STATIC", "2. Fix", SS_LEFT, PAD, y2 + 4, 60, 20, 0);
+        mk("STATIC", "trim base", SS_LEFT, PAD + 66, y2 + 4, 64, 20, 0);
+        let trim_edit = mk("EDIT", "0", ES_NUMBER_ | WS_BORDER, PAD + 132, y2, 44, 24, ID_TRIM);
+        mk("STATIC", "remove bg", SS_LEFT, PAD + 190, y2 + 4, 72, 20, 0);
+        let bg_edit = mk("EDIT", "", ES_NUMBER_ | WS_BORDER, PAD + 264, y2, 44, 24, ID_BG);
+        mk("STATIC", "cols", SS_LEFT, PAD + 322, y2 + 4, 32, 20, 0);
+        let cols_edit = mk("EDIT", "", ES_NUMBER_ | WS_BORDER, PAD + 356, y2, 42, 24, ID_COLS);
+        mk("STATIC", "rows", SS_LEFT, PAD + 408, y2 + 4, 36, 20, 0);
+        let rows_edit = mk("EDIT", "", ES_NUMBER_ | WS_BORDER, PAD + 446, y2, 42, 24, ID_ROWS);
+        mk("BUTTON", "Fit to grid", BS_PUSH, PAD + 502, y2 - 1, 96, 26, ID_FIT);
+        mk("BUTTON", "Use original", BS_PUSH, PAD + 604, y2 - 1, 100, 26, ID_ORIGINAL);
 
-        mk("STATIC", "Name:", SS_LEFT, PAD + 286, PAD + 40, 44, 20, 0);
-        let name = mk("EDIT", "", WS_BORDER, PAD + 332, PAD + 36, 200, 24, ID_NAME);
+        // -- row 3: the grid and the name ---------------------------------
+        let y3 = PAD + 66;
+        mk("STATIC", "3. Grid", SS_LEFT, PAD, y3 + 4, 60, 20, 0);
+        mk("STATIC", "cell", SS_LEFT, PAD + 66, y3 + 4, 28, 20, 0);
+        let cw_edit = mk("EDIT", "64", ES_NUMBER_ | WS_BORDER, PAD + 96, y3, 48, 24, ID_CELL_W);
+        mk("STATIC", "x", SS_CENTER, PAD + 148, y3 + 4, 12, 20, 0);
+        let ch_edit = mk("EDIT", "64", ES_NUMBER_ | WS_BORDER, PAD + 164, y3, 48, 24, ID_CELL_H);
+        mk("BUTTON", "Guess", BS_PUSH, PAD + 220, y3 - 1, 62, 26, ID_GUESS);
+
+        mk("STATIC", "name", SS_LEFT, PAD + 300, y3 + 4, 38, 20, 0);
+        let name = mk("EDIT", "", WS_BORDER, PAD + 340, y3, 190, 24, ID_NAME);
 
         let hint = mk(
             "STATIC",
-            "Pick an animation, then click cells in order.",
+            "Drop a sprite sheet to begin.",
             SS_LEFT,
             PAD + 546,
-            PAD + 40,
-            440,
+            y3 + 4,
+            510,
             20,
             0,
         );
@@ -483,10 +517,18 @@ unsafe fn build(hwnd: HWND) -> Editor {
             path_label,
             hint,
             frames_label,
+            trim_edit,
+            bg_edit,
+            cols_edit,
+            rows_edit,
             src: None,
             px: Vec::new(),
             iw: 0,
             ih: 0,
+            orig: Vec::new(),
+            orig_w: 0,
+            orig_h: 0,
+            fitted: false,
             cell_w: 64,
             cell_h: 64,
             frames: vec![Vec::new(); ANIM_COUNT],
@@ -566,6 +608,31 @@ fn on_command(ed: &mut Editor, id: isize, code: u32) {
             sync_list(ed);
             redraw(ed);
         }
+        ID_FIT => {
+            if ed.orig.is_empty() {
+                return warn(ed.hwnd, "Load a sheet first.");
+            }
+            let o = fit_options(ed);
+            match apply_fit(ed, &o) {
+                Ok(msg) => set_text(ed.hint, &msg),
+                Err(e) => set_text(ed.hint, &format!("Could not fit a grid: {e}")),
+            }
+            sync_list(ed);
+            redraw(ed);
+        }
+        ID_ORIGINAL => {
+            if ed.orig.is_empty() {
+                return;
+            }
+            use_original(ed);
+            guess_cell(ed);
+            set_text(
+                ed.hint,
+                &format!("{}x{} as it is on disk, no fitting.", ed.iw, ed.ih),
+            );
+            sync_list(ed);
+            redraw(ed);
+        }
         ID_ADD => add(ed),
         ID_CANCEL => unsafe {
             DestroyWindow(ed.hwnd);
@@ -593,13 +660,13 @@ fn browse(ed: &mut Editor) {
     }
 }
 
-/// Read a PNG in and reset the grid to a sensible guess.
+/// Read a PNG in, tidy it if it needs tidying, and set up the grid.
 fn load(ed: &mut Editor, path: &Path) {
     match crate::sprites::decode_png_straight(path) {
         Ok((px, w, h)) => {
-            ed.px = px;
-            ed.iw = w as i32;
-            ed.ih = h as i32;
+            ed.orig = px;
+            ed.orig_w = w as i32;
+            ed.orig_h = h as i32;
             ed.src = Some(path.to_path_buf());
             set_text(ed.path_label, &path.display().to_string());
             if ed.name_text().is_empty() {
@@ -608,18 +675,112 @@ fn load(ed: &mut Editor, path: &Path) {
             for f in ed.frames.iter_mut() {
                 f.clear();
             }
-            guess_cell(ed);
-            prefill(ed);
-            set_text(
-                ed.hint,
-                &format!("{w}x{h}. Pick an animation, then click cells in order."),
-            );
+            // A sheet already on an exact grid is used as-is: fitting resamples
+            // and re-anchors every pose, which would soften pixel art somebody
+            // drew correctly. Anything else gets fitted, because slicing raw
+            // generator output on any fixed cell size cuts creatures in half —
+            // which is what the grid looks like before this runs.
+            match crate::regrid::already_gridded(&ed.orig, w, h) {
+                Some((cw, ch)) => {
+                    use_original(ed);
+                    ed.cell_w = cw as i32;
+                    ed.cell_h = ch as i32;
+                    set_text(ed.cw_edit, &ed.cell_w.to_string());
+                    set_text(ed.ch_edit, &ed.cell_h.to_string());
+                    set_text(
+                        ed.hint,
+                        &format!("{w}x{h}, already on a {cw}px grid — used as-is."),
+                    );
+                    prefill(ed);
+                }
+                None => auto_fit(ed),
+            }
         }
         Err(e) => {
             warn(ed.hwnd, &format!("Could not read that image.\n\n{e}"));
         }
     }
     redraw(ed);
+}
+
+/// Read the fixing controls. Blank means "work it out".
+fn fit_options(ed: &Editor) -> crate::regrid::Options {
+    let num = |h: HWND| -> Option<u32> {
+        let s = get_text(h);
+        let s = s.trim();
+        if s.is_empty() { None } else { s.parse().ok() }
+    };
+    crate::regrid::Options {
+        cell: read_num(ed.cw_edit).clamp(8, 256) as u32,
+        trim_bottom: num(ed.trim_edit).unwrap_or(0),
+        key_bg: num(ed.bg_edit).map(|v| v.clamp(1, 255) as u8),
+        cols: num(ed.cols_edit),
+        rows: num(ed.rows_edit),
+    }
+}
+
+/// Fit with whatever the controls say, and report what happened.
+fn apply_fit(ed: &mut Editor, o: &crate::regrid::Options) -> Result<String, String> {
+    let f = crate::regrid::fit(&ed.orig, ed.orig_w as u32, ed.orig_h as u32, o)?;
+    let total = f.cols * f.rows;
+    ed.px = f.px;
+    ed.iw = f.w as i32;
+    ed.ih = f.h as i32;
+    ed.cell_w = f.cell as i32;
+    ed.cell_h = f.cell as i32;
+    ed.fitted = true;
+    set_text(ed.cw_edit, &ed.cell_w.to_string());
+    set_text(ed.ch_edit, &ed.cell_h.to_string());
+    // Frames are positions in the grid, and the grid just changed.
+    let n = total as u16;
+    for fr in ed.frames.iter_mut() {
+        fr.retain(|&c| c < n);
+    }
+    Ok(format!(
+        "Fitted: {} x {} = {} cells, {} sprites, largest {}x{} scaled {:.2}x.",
+        f.cols, f.rows, total, f.found, f.largest.0, f.largest.1, f.scale
+    ))
+}
+
+/// Fit a freshly loaded sheet, deciding for itself whether the background needs
+/// removing.
+///
+/// A solid background makes the whole image read as one enormous sprite, and
+/// the tool cannot tell that from a legitimate single-cell sheet — so rather
+/// than ask, try without keying and retry with it if the answer was absurd.
+fn auto_fit(ed: &mut Editor) {
+    let mut o = fit_options(ed);
+    o.key_bg = None;
+    let first = crate::regrid::fit(&ed.orig, ed.orig_w as u32, ed.orig_h as u32, &o);
+    let needs_key = match &first {
+        Ok(f) => f.cols * f.rows < 2,
+        Err(_) => true,
+    };
+    if needs_key {
+        o.key_bg = Some(crate::regrid::DEFAULT_BG_TOL);
+        set_text(ed.bg_edit, &crate::regrid::DEFAULT_BG_TOL.to_string());
+    }
+    match apply_fit(ed, &o) {
+        Ok(mut msg) => {
+            if needs_key {
+                msg.push_str(" Background removed.");
+            }
+            set_text(ed.hint, &msg);
+            prefill(ed);
+        }
+        Err(e) => {
+            use_original(ed);
+            set_text(ed.hint, &format!("Could not fit a grid: {e}"));
+        }
+    }
+}
+
+/// Go back to the file exactly as it is on disk.
+fn use_original(ed: &mut Editor) {
+    ed.px = ed.orig.clone();
+    ed.iw = ed.orig_w;
+    ed.ih = ed.orig_h;
+    ed.fitted = false;
 }
 
 /// Pick the squarest cell size that divides the sheet exactly and lands nearest
@@ -1033,6 +1194,21 @@ fn default_name(path: &Path) -> String {
         .and_then(|s| s.to_str())
         .map(sanitise)
         .unwrap_or_default();
+    // A name carrying a timestamp came from a generator, not from a person, and
+    // proposing "chatgpt-image-aug-10--2026-04-55-04-pm" invites someone to
+    // press Add and end up with that in their tray menu. Better to ask.
+    let noisy = stem.len() > 24
+        || stem.contains("chatgpt")
+        || stem.contains("screenshot")
+        || stem.contains("untitled")
+        || stem.contains("download")
+        || stem
+            .as_bytes()
+            .windows(4)
+            .any(|w| w.iter().all(|c| c.is_ascii_digit()));
+    if noisy {
+        return String::new();
+    }
     if !stem.is_empty() && !GENERIC.contains(&stem.as_str()) {
         return stem;
     }
@@ -1081,10 +1257,20 @@ fn add(ed: &mut Editor) {
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return warn(ed.hwnd, &format!("Could not create the folder.\n\n{e}"));
     }
-    // Copy the PNG untouched rather than re-encoding what we decoded: the file
-    // the user picked is the file they get, bit for bit.
-    if let Err(e) = std::fs::copy(&src, dir.join("creature.png")) {
-        return warn(ed.hwnd, &format!("Could not copy the image.\n\n{e}"));
+    // What gets written is what is on screen. If the sheet was fitted, copying
+    // the original would ship a file whose grid has nothing to do with the
+    // frame numbers just assigned against the fitted one. If it was not, the
+    // file is copied untouched rather than re-encoded — bit for bit what the
+    // author picked.
+    let wrote = if ed.fitted {
+        write_png(&dir.join("creature.png"), &ed.px, ed.iw as u32, ed.ih as u32)
+    } else {
+        std::fs::copy(&src, dir.join("creature.png"))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    };
+    if let Err(e) = wrote {
+        return warn(ed.hwnd, &format!("Could not write the image.\n\n{e}"));
     }
     if let Err(e) = std::fs::write(dir.join("sprite.toml"), manifest(ed.cell_w, ed.cell_h, &ed.frames, &ed.ms)) {
         return warn(ed.hwnd, &format!("Could not write sprite.toml.\n\n{e}"));
@@ -1145,6 +1331,27 @@ fn manifest(cell_w: i32, cell_h: i32, frames: &[Vec<u16>], ms: &[u32]) -> String
         ));
     }
     s
+}
+
+/// Straight RGBA out. Only used for a fitted sheet — an untouched file is
+/// copied rather than re-encoded, so nothing is lost for no reason.
+fn write_png(path: &Path, px: &[u32], w: u32, h: u32) -> Result<(), String> {
+    let mut flat = Vec::with_capacity((w * h * 4) as usize);
+    for p in px {
+        flat.extend_from_slice(&[
+            ((p >> 16) & 0xFF) as u8,
+            ((p >> 8) & 0xFF) as u8,
+            (p & 0xFF) as u8,
+            (p >> 24) as u8,
+        ]);
+    }
+    let f = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .and_then(|mut w| w.write_image_data(&flat))
+        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1311,6 +1518,19 @@ mod tests {
         assert_eq!(sanitise("  spaced  "), "spaced");
         assert_eq!(sanitise("../escape"), "escape");
         assert_eq!(sanitise(r"C:\evil"), "c--evil");
+    }
+
+    #[test]
+    fn a_generator_filename_is_not_a_creature_name() {
+        assert_eq!(default_name(Path::new("dragon.png")), "dragon");
+        // The exporter's own filename: fall back to the folder.
+        assert_eq!(
+            default_name(Path::new("sprites/wolf/creature.png")),
+            "wolf"
+        );
+        // Timestamped generator output: leave it blank so the user must type.
+        assert!(default_name(Path::new("ChatGPT Image Aug 10, 2026, 04_55_04 PM.png")).is_empty());
+        assert!(default_name(Path::new("Screenshot 2026-08-10.png")).is_empty());
         assert!(sanitise("???").is_empty(), "a name of only junk must be rejected upstream");
     }
 
@@ -1372,7 +1592,15 @@ mod tests {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Editor;
             assert!(!ptr.is_null());
             let ed = &mut *ptr;
-            load(ed, Path::new("assets/sprites/turtle/creature.png"));
+            // Prefer a raw generated sheet if one is lying around: that is the
+            // case fitting exists for, and the one worth looking at.
+            let raw = std::env::var("PETPAL_PREVIEW_SHEET").ok();
+            let path = raw
+                .as_deref()
+                .map(Path::new)
+                .filter(|p| p.exists())
+                .unwrap_or(Path::new("assets/sprites/turtle/creature.png"));
+            load(ed, path);
             ed.sel = Anim::Climb as usize;
             ed.frames[Anim::Climb as usize] = vec![16, 17];
             set_text(ed.ms_edit, &ed.ms[ed.sel].to_string());
@@ -1500,5 +1728,50 @@ mod tests {
         assert!(!text.contains("[anims.sleep]"));
         // ...but it should say so, so the author is not left wondering.
         assert!(text.contains("fall back to idle"));
+    }
+
+    /// The whole new path in one go: take a sheet, fit it, write what the Add
+    /// button would write, and load it with the real loader. Fitting produces
+    /// the PNG *and* decides the frame numbering, so an error anywhere in it
+    /// shows up as a creature with holes rather than as a failure.
+    #[test]
+    fn a_fitted_sheet_round_trips_through_the_loader() {
+        let src = std::path::Path::new("assets/sprites/turtle/creature.png");
+        let (px, w, h) = crate::sprites::decode_png_straight(src).expect("turtle sheet");
+
+        let o = crate::regrid::Options { cell: 64, ..Default::default() };
+        let f = crate::regrid::fit(&px, w, h, &o).expect("fit");
+        assert_eq!((f.cols, f.rows), (8, 6), "the turtle sheet is 8x6");
+        assert_eq!(f.found, 48, "every cell should carry a sprite");
+        assert_eq!((f.w, f.h), (512, 384));
+
+        let dir = std::env::temp_dir().join("petpal-fit-roundtrip");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_png(&dir.join("creature.png"), &f.px, f.w, f.h).expect("write");
+
+        // Assign every cell so a hole anywhere would be caught.
+        let mut frames = vec![Vec::new(); ANIM_COUNT];
+        frames[Anim::Idle as usize] = (0..48u16).collect();
+        std::fs::write(
+            dir.join("sprite.toml"),
+            manifest(f.cell as i32, f.cell as i32, &frames, &vec![120; ANIM_COUNT]),
+        )
+        .unwrap();
+
+        let set = crate::sprites::load_sheet(&dir).expect("load");
+        assert_eq!(set.frame_count(Anim::Idle), 48);
+        for i in 0..48 {
+            let ink = set.frame(Anim::Idle, i).px.iter().filter(|&&p| p >> 24 > 24).count();
+            assert!(ink > 50, "frame {i} came out blank after fitting");
+        }
+        // Feet on the bottom row is the placement the renderer assumes.
+        for i in 0..48 {
+            let fr = set.frame(Anim::Idle, i);
+            let last = (63 * 64..64 * 64).any(|k| fr.px[k] >> 24 > 24);
+            assert!(last, "frame {i} does not reach the bottom row of its cell");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

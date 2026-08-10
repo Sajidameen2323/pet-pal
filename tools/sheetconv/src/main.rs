@@ -1,54 +1,24 @@
-//! Fit an arbitrary contact sheet onto a PetPal sprite grid.
+//! Fit an arbitrary contact sheet onto a PetPal sprite grid, from the command
+//! line.
 //!
-//! Sheets that come out of an image generator are rarely usable as-is. They
-//! tend to have some mix of:
+//! The app has the same thing built into **Tray > Sprite > Add a sprite...**,
+//! which is easier to use because you can see the grid land. This exists for
+//! batches and scripts.
 //!
-//!   * an opaque background instead of alpha,
-//!   * sprites placed freehand, so no uniform cell grid exists,
-//!   * a ground plate or shadow painted under each pose,
-//!   * a render resolution far larger than the pixel art it depicts.
-//!
-//! This fixes all four and writes a `creature.png` + `sprite.toml` that PetPal
-//! can load. Run with `--help` for the options.
+//! The fitting itself lives in the app's `src/regrid.rs` and is included here
+//! rather than copied: two implementations of "where are the sprites" would
+//! disagree eventually, and then the guide would be wrong about one of them.
 
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-/// A pixel at or above this on every channel counts as background when keying.
-const WHITE_LEVEL: u8 = 232;
-/// Alpha above this counts as ink when measuring sprites.
-const INK_ALPHA: u8 = 24;
-/// Default per-channel tolerance for `--key-bg`.
-const DEFAULT_BG_TOL: u8 = 30;
-
-struct Img {
-    w: usize,
-    h: usize,
-    px: Vec<[u8; 4]>, // straight RGBA
-}
-
-impl Img {
-    fn at(&self, x: usize, y: usize) -> [u8; 4] {
-        self.px[y * self.w + x]
-    }
-    fn is_ink(&self, x: usize, y: usize) -> bool {
-        self.px[y * self.w + x][3] > INK_ALPHA
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Options
-// ---------------------------------------------------------------------------
+#[path = "../../../src/regrid.rs"]
+mod regrid;
 
 struct Opts {
     input: PathBuf,
     out_dir: PathBuf,
-    cell: usize,
-    trim_bottom: usize,
+    o: regrid::Options,
     key_white: bool,
-    key_bg: Option<u8>,
-    cols: Option<usize>,
-    rows: Option<usize>,
 }
 
 const USAGE: &str = "\
@@ -63,17 +33,19 @@ OPTIONS:
                        source-image pixels. Use this when the art has a ground
                        plate or shadow painted under each pose -- that is
                        artwork, not background, so nothing else will remove it.
-    --key-white        delete a WHITE background by flooding in from the image
-                       borders. Only needed when the PNG has no alpha. Flooding
-                       from the edge rather than keying by colour means white
-                       *inside* the sprite (paws, chest) is kept.
-    --key-bg [TOL]     same, but for a background of ANY colour, including a
-                       gradient or a vignette. TOL is the largest per-channel
-                       step it will follow (default 30). Raise it if a haze is
-                       left behind; lower it if the creature loses its edges.
+    --key-bg [TOL]     delete a background of ANY colour, including a gradient
+                       or a vignette, by flooding in from the image borders.
+                       TOL is the largest per-channel step it will follow
+                       (default 30). Raise it if a haze is left behind; lower it
+                       if the creature loses its edges.
+    --key-white        the older, narrower version: near-white backgrounds only.
     --cols N           force the column count instead of detecting it
     --rows N           force the row count instead of detecting it
     -h, --help         this text
+
+    Forcing --cols/--rows splits the whole image into equal bands, which is
+    wrong as soon as the sheet has margins around the art. Try it without them
+    first.
 
 WHAT IT DOES
     Detects each sprite, scales them all by one shared factor so the creature
@@ -93,79 +65,96 @@ fn parse_args() -> Result<Opts, String> {
     if a.len() < 2 {
         return Err("need <input.png> and <output-dir>; try --help".into());
     }
-    let mut o = Opts {
+    let mut opts = Opts {
         input: PathBuf::from(&a[0]),
         out_dir: PathBuf::from(&a[1]),
-        cell: 64,
-        trim_bottom: 0,
+        o: regrid::Options::default(),
         key_white: false,
-        key_bg: None,
-        cols: None,
-        rows: None,
     };
     let mut i = 2;
     while i < a.len() {
-        let need = |i: usize| -> Result<usize, String> {
+        let need = |i: usize| -> Result<u32, String> {
             a.get(i + 1)
                 .ok_or_else(|| format!("{} needs a value", a[i]))?
                 .parse()
                 .map_err(|_| format!("{} needs a number", a[i]))
         };
         match a[i].as_str() {
-            "--cell" => { o.cell = need(i)?; i += 2 }
-            "--trim-bottom" => { o.trim_bottom = need(i)?; i += 2 }
-            "--cols" => { o.cols = Some(need(i)?); i += 2 }
-            "--rows" => { o.rows = Some(need(i)?); i += 2 }
-            "--key-white" => { o.key_white = true; i += 1 }
+            "--cell" => { opts.o.cell = need(i)?; i += 2 }
+            "--trim-bottom" => { opts.o.trim_bottom = need(i)?; i += 2 }
+            "--cols" => { opts.o.cols = Some(need(i)?); i += 2 }
+            "--rows" => { opts.o.rows = Some(need(i)?); i += 2 }
+            "--key-white" => { opts.key_white = true; i += 1 }
             "--key-bg" => {
                 // Optional value: a bare --key-bg uses the default tolerance.
                 match a.get(i + 1).and_then(|v| v.parse::<u8>().ok()) {
-                    Some(t) => { o.key_bg = Some(t); i += 2 }
-                    None => { o.key_bg = Some(DEFAULT_BG_TOL); i += 1 }
+                    Some(t) => { opts.o.key_bg = Some(t); i += 2 }
+                    None => { opts.o.key_bg = Some(regrid::DEFAULT_BG_TOL); i += 1 }
                 }
             }
             other => return Err(format!("unknown option {other}; try --help")),
         }
     }
-    if o.cell < 8 {
+    if opts.o.cell < 8 {
         return Err("--cell must be at least 8".into());
     }
-    Ok(o)
+    // The old flag, in the new terms: white is just a very pale background.
+    if opts.key_white && opts.o.key_bg.is_none() {
+        opts.o.key_bg = Some(12);
+    }
+    Ok(opts)
 }
 
-// ---------------------------------------------------------------------------
-// Image IO
-// ---------------------------------------------------------------------------
-
-fn read_png(path: &Path) -> Result<Img, String> {
+fn read_png(path: &Path) -> Result<(Vec<u32>, u32, u32), String> {
     let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut dec = png::Decoder::new(std::io::BufReader::new(f));
     dec.set_transformations(png::Transformations::normalize_to_color8());
     let mut r = dec.read_info().map_err(|e| format!("{}: {e}", path.display()))?;
     let mut buf = vec![0u8; r.output_buffer_size().unwrap_or(0)];
     let info = r.next_frame(&mut buf).map_err(|e| format!("{}: {e}", path.display()))?;
-    let (w, h) = (info.width as usize, info.height as usize);
+    let (w, h) = (info.width, info.height);
     let data = &buf[..info.buffer_size()];
-
-    let px: Vec<[u8; 4]> = match info.color_type {
-        png::ColorType::Rgb => data.chunks_exact(3).map(|p| [p[0], p[1], p[2], 255]).collect(),
-        png::ColorType::Rgba => data.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).collect(),
-        png::ColorType::Grayscale => data.iter().map(|&g| [g, g, g, 255]).collect(),
-        png::ColorType::GrayscaleAlpha => {
-            data.chunks_exact(2).map(|p| [p[0], p[0], p[0], p[1]]).collect()
-        }
+    let px: Vec<u32> = match info.color_type {
+        png::ColorType::Rgb => data
+            .chunks_exact(3)
+            .map(|p| 0xFF00_0000 | ((p[0] as u32) << 16) | ((p[1] as u32) << 8) | p[2] as u32)
+            .collect(),
+        png::ColorType::Rgba => data
+            .chunks_exact(4)
+            .map(|p| {
+                ((p[3] as u32) << 24) | ((p[0] as u32) << 16) | ((p[1] as u32) << 8) | p[2] as u32
+            })
+            .collect(),
+        png::ColorType::Grayscale => data
+            .iter()
+            .map(|&g| 0xFF00_0000 | ((g as u32) << 16) | ((g as u32) << 8) | g as u32)
+            .collect(),
+        png::ColorType::GrayscaleAlpha => data
+            .chunks_exact(2)
+            .map(|p| {
+                ((p[1] as u32) << 24)
+                    | ((p[0] as u32) << 16)
+                    | ((p[0] as u32) << 8)
+                    | p[0] as u32
+            })
+            .collect(),
         other => return Err(format!("unsupported colour type {other:?}")),
     };
-    Ok(Img { w, h, px })
+    Ok((px, w, h))
 }
 
-fn write_png(path: &Path, px: &[[u8; 4]], w: usize, h: usize) -> Result<(), String> {
-    let mut flat = Vec::with_capacity(w * h * 4);
+fn write_png(path: &Path, px: &[u32], w: u32, h: u32) -> Result<(), String> {
+    let mut flat = Vec::with_capacity((w * h * 4) as usize);
     for p in px {
-        flat.extend_from_slice(p);
+        flat.extend_from_slice(&[
+            ((p >> 16) & 0xFF) as u8,
+            ((p >> 8) & 0xFF) as u8,
+            (p & 0xFF) as u8,
+            (p >> 24) as u8,
+        ]);
     }
     let f = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w as u32, h as u32);
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header()
@@ -173,201 +162,40 @@ fn write_png(path: &Path, px: &[[u8; 4]], w: usize, h: usize) -> Result<(), Stri
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-// ---------------------------------------------------------------------------
-// Background keying
-// ---------------------------------------------------------------------------
-
-/// Delete a background of any colour by flooding inward from the border.
+/// A manifest for the produced grid.
 ///
-/// `--key-white` only helps when the background really is white. Image
-/// generators hand back grey studio backdrops, coloured washes and vignettes
-/// just as often, and on those it does nothing at all — the whole sheet then
-/// reads as one enormous sprite.
-///
-/// The test is against the *neighbour* rather than against a fixed seed colour,
-/// so the flood walks a gradient: each step only has to be similar to the pixel
-/// it spread from. Every border pixel is a seed, on the assumption that the art
-/// does not run off the edge of its own sheet.
-///
-/// `tol` is the largest per-channel jump treated as "same background". Too high
-/// and the flood eats into the creature wherever its colour approaches the
-/// backdrop's.
-fn key_background(img: &mut Img, tol: u8) {
-    let (w, h) = (img.w, img.h);
-    let near = |a: [u8; 4], b: [u8; 4]| {
-        b[3] > INK_ALPHA
-            && a[0].abs_diff(b[0]) <= tol
-            && a[1].abs_diff(b[1]) <= tol
-            && a[2].abs_diff(b[2]) <= tol
+/// Rows 0-2 are assumed to be idle / walk / run, which is how these sheets are
+/// almost always laid out. Everything else is listed as comments with its frame
+/// numbers so it can be assigned by hand -- guessing which pose means "annoyed"
+/// is not something a program should do silently. The in-app editor is the
+/// pleasant way to do that part.
+fn manifest(cols: u32, rows: u32, cell: u32) -> String {
+    let row_frames = |r: u32| -> String {
+        (0..cols)
+            .map(|c| (r * cols + c).to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     };
-
-    let mut bg = vec![false; w * h];
-    let mut q: VecDeque<usize> = VecDeque::new();
-    let seed = |i: usize, bg: &mut Vec<bool>, q: &mut VecDeque<usize>| {
-        if !bg[i] && img.px[i][3] > INK_ALPHA {
-            bg[i] = true;
-            q.push_back(i);
-        }
-    };
-    for x in 0..w {
-        seed(x, &mut bg, &mut q);
-        seed((h - 1) * w + x, &mut bg, &mut q);
-    }
-    for y in 0..h {
-        seed(y * w, &mut bg, &mut q);
-        seed(y * w + w - 1, &mut bg, &mut q);
-    }
-
-    while let Some(i) = q.pop_front() {
-        let (x, y) = (i % w, i / w);
-        let mut n: Vec<usize> = Vec::with_capacity(4);
-        if x > 0 { n.push(i - 1) }
-        if x + 1 < w { n.push(i + 1) }
-        if y > 0 { n.push(i - w) }
-        if y + 1 < h { n.push(i + w) }
-        for j in n {
-            if !bg[j] && near(img.px[i], img.px[j]) {
-                bg[j] = true;
-                q.push_back(j);
-            }
+    let mut s = String::new();
+    s.push_str("# Converted by sheetconv.\n");
+    s.push_str("# Rows 0-2 are guessed as idle / walk / run. Everything else is\n");
+    s.push_str("# listed below for you to assign -- or use Tray > Sprite > Add a\n");
+    s.push_str("# sprite... which lets you click the cells instead.\n\n");
+    s.push_str("image = \"creature.png\"\n");
+    s.push_str(&format!("frame_width = {cell}\nframe_height = {cell}\n"));
+    for (name, row, ms) in [("idle", 0u32, 200u32), ("walk", 1, 90), ("run", 2, 55)] {
+        if row < rows {
+            s.push_str(&format!("\n[anims.{name}]\nframes = [{}]\nframe_ms = {ms}\n", row_frames(row)));
         }
     }
-    for i in 0..w * h {
-        if bg[i] {
-            img.px[i] = [0, 0, 0, 0];
+    if rows > 3 {
+        s.push_str("\n# Unassigned frames, by row:\n");
+        for r in 3..rows {
+            s.push_str(&format!("#   row {r}: {}\n", row_frames(r)));
         }
+        s.push_str("# Animation names: fall sleep annoyed drag alert sit climb\n");
     }
-}
-
-/// Delete the background by flooding inward from the border.
-///
-/// A plain colour key would punch holes in the artwork wherever the creature
-/// itself is white — paws, chest, teeth. Only white that is *connected to the
-/// edge* is background.
-fn key_white_background(img: &mut Img) {
-    let (w, h) = (img.w, img.h);
-    let light = |p: [u8; 4]| {
-        p[3] > INK_ALPHA && p[0] >= WHITE_LEVEL && p[1] >= WHITE_LEVEL && p[2] >= WHITE_LEVEL
-    };
-    let mut bg = vec![false; w * h];
-    let mut q: VecDeque<usize> = VecDeque::new();
-
-    for i in (0..w).chain((0..w).map(|x| (h - 1) * w + x)) {
-        if light(img.px[i]) && !bg[i] {
-            bg[i] = true;
-            q.push_back(i);
-        }
-    }
-    for y in 0..h {
-        for i in [y * w, y * w + w - 1] {
-            if light(img.px[i]) && !bg[i] {
-                bg[i] = true;
-                q.push_back(i);
-            }
-        }
-    }
-    while let Some(i) = q.pop_front() {
-        let (x, y) = (i % w, i / w);
-        let mut n: Vec<usize> = Vec::with_capacity(4);
-        if x > 0 { n.push(i - 1) }
-        if x + 1 < w { n.push(i + 1) }
-        if y > 0 { n.push(i - w) }
-        if y + 1 < h { n.push(i + w) }
-        for j in n {
-            if !bg[j] && light(img.px[j]) {
-                bg[j] = true;
-                q.push_back(j);
-            }
-        }
-    }
-    for i in 0..w * h {
-        if bg[i] {
-            img.px[i] = [0, 0, 0, 0];
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Grid detection
-// ---------------------------------------------------------------------------
-
-/// Runs of consecutive indices with non-zero occupancy, ignoring specks.
-fn bands(occ: &[usize], min_len: usize) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    let mut start = None;
-    for (i, &v) in occ.iter().enumerate() {
-        match (v > 0, start) {
-            (true, None) => start = Some(i),
-            (false, Some(s)) => {
-                if i - s >= min_len {
-                    out.push((s, i - 1));
-                }
-                start = None;
-            }
-            _ => {}
-        }
-    }
-    if let Some(s) = start {
-        if occ.len() - s >= min_len {
-            out.push((s, occ.len() - 1));
-        }
-    }
-    out
-}
-
-/// Split an axis into `n` equal slices, for when detection is overridden.
-fn even_bands(len: usize, n: usize) -> Vec<(usize, usize)> {
-    (0..n).map(|i| (i * len / n, (i + 1) * len / n - 1)).collect()
-}
-
-// ---------------------------------------------------------------------------
-// Resampling
-// ---------------------------------------------------------------------------
-
-/// Area-average downscale in premultiplied space, so edges do not pick up a
-/// dark or white halo from transparent neighbours.
-fn resample(
-    src: &Img,
-    x0: usize, y0: usize, sw: usize, sh: usize,
-    dw: usize, dh: usize,
-) -> Vec<[u8; 4]> {
-    let mut out = vec![[0u8; 4]; dw * dh];
-    for dy in 0..dh {
-        let sy0 = y0 + dy * sh / dh;
-        let sy1 = (y0 + ((dy + 1) * sh).div_ceil(dh)).max(sy0 + 1).min(y0 + sh);
-        for dx in 0..dw {
-            let sx0 = x0 + dx * sw / dw;
-            let sx1 = (x0 + ((dx + 1) * sw).div_ceil(dw)).max(sx0 + 1).min(x0 + sw);
-            let (mut r, mut g, mut b, mut a, mut n) = (0u64, 0u64, 0u64, 0u64, 0u64);
-            for y in sy0..sy1 {
-                for x in sx0..sx1 {
-                    let p = src.at(x, y);
-                    let pa = p[3] as u64;
-                    r += p[0] as u64 * pa;
-                    g += p[1] as u64 * pa;
-                    b += p[2] as u64 * pa;
-                    a += pa;
-                    n += 1;
-                }
-            }
-            if n == 0 || a == 0 {
-                continue;
-            }
-            out[dy * dw + dx] = [(r / a) as u8, (g / a) as u8, (b / a) as u8, (a / n) as u8];
-        }
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
-
-struct Sprite {
-    x0: usize,
-    y0: usize,
-    x1: usize,
-    y1: usize,
-    /// Horizontal centre of the ink under the body, used as the anchor.
-    anchor_x: usize,
+    s
 }
 
 fn main() {
@@ -385,181 +213,38 @@ fn main() {
 }
 
 fn run(o: &Opts) -> Result<(), String> {
-    let mut img = read_png(&o.input)?;
-    println!("input      {}x{}", img.w, img.h);
-
-    if let Some(tol) = o.key_bg {
-        key_background(&mut img, tol);
+    let (px, w, h) = read_png(&o.input)?;
+    println!("input      {w}x{h}");
+    if let Some(tol) = o.o.key_bg {
         println!("keyed      background removed by border flood, tolerance {tol}");
-    } else if o.key_white {
-        key_white_background(&mut img);
-        println!("keyed      white background removed by border flood");
     }
 
-    // Project ink onto each axis to find the sprite rows and columns.
-    let (w, h) = (img.w, img.h);
-    let (mut colocc, mut rowocc) = (vec![0usize; w], vec![0usize; h]);
-    for y in 0..h {
-        for x in 0..w {
-            if img.is_ink(x, y) {
-                colocc[x] += 1;
-                rowocc[y] += 1;
-            }
-        }
+    let f = regrid::fit(&px, w, h, &o.o)?;
+    println!(
+        "grid       {} columns x {} rows = {} cells",
+        f.cols,
+        f.rows,
+        f.cols * f.rows
+    );
+    if o.o.trim_bottom > 0 {
+        println!("trim       {} px off the bottom of each sprite", o.o.trim_bottom);
     }
-    let cols = match o.cols {
-        Some(n) => even_bands(w, n),
-        None => bands(&colocc, 8),
-    };
-    let rows = match o.rows {
-        Some(n) => even_bands(h, n),
-        None => bands(&rowocc, 8),
-    };
-    if cols.is_empty() || rows.is_empty() {
-        return Err("no sprites found — is the image blank, or does it need --key-white?".into());
-    }
-    println!("grid       {} columns x {} rows = {} cells", cols.len(), rows.len(), cols.len() * rows.len());
-
-    // Measure each sprite inside its own cell region.
-    let mut sprites: Vec<Option<Sprite>> = Vec::new();
-    for &(ry0, ry1) in &rows {
-        for &(cx0, cx1) in &cols {
-            let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
-            for y in ry0..=ry1 {
-                for x in cx0..=cx1 {
-                    if img.is_ink(x, y) {
-                        x0 = x0.min(x);
-                        y0 = y0.min(y);
-                        x1 = x1.max(x);
-                        y1 = y1.max(y);
-                    }
-                }
-            }
-            if x0 == usize::MAX {
-                sprites.push(None);
-                continue;
-            }
-            // Drop the ground plate, if the sheet has one.
-            y1 = y1.saturating_sub(o.trim_bottom).max(y0);
-
-            // Anchor on the ink in the lowest fifth: the feet stay put between
-            // frames, a tail or a raised paw does not.
-            let foot_top = y1 - ((y1 - y0) / 5).max(1).min(y1 - y0);
-            let (mut sum, mut cnt) = (0usize, 0usize);
-            for y in foot_top..=y1 {
-                for x in x0..=x1 {
-                    if img.is_ink(x, y) {
-                        sum += x;
-                        cnt += 1;
-                    }
-                }
-            }
-            let anchor_x = if cnt > 0 { sum / cnt } else { (x0 + x1) / 2 };
-            sprites.push(Some(Sprite { x0, y0, x1, y1, anchor_x }));
-        }
-    }
-
-    let found = sprites.iter().flatten().count();
-    if o.trim_bottom > 0 {
-        println!("trim       {} px off the bottom of each sprite", o.trim_bottom);
-    }
-
-    // One scale for every frame. Scaling each sprite to fit its own box would
-    // make the creature pulse as it animates.
-    let (mut maxw, mut maxh) = (1usize, 1usize);
-    for s in sprites.iter().flatten() {
-        maxw = maxw.max(s.x1 - s.x0 + 1);
-        maxh = maxh.max(s.y1 - s.y0 + 1);
-    }
-    let budget = o.cell as f64 * 0.97;
-    let scale = (budget / maxw as f64).min(budget / maxh as f64);
-    println!("sprites    {found} found, largest {maxw}x{maxh}, scaled by {scale:.3}");
-
-    let (gc, gr) = (cols.len(), rows.len());
-    let (sw, sh) = (gc * o.cell, gr * o.cell);
-    let mut sheet = vec![[0u8; 4]; sw * sh];
-
-    for (n, s) in sprites.iter().enumerate() {
-        let Some(s) = s else { continue };
-        let (bw, bh) = (s.x1 - s.x0 + 1, s.y1 - s.y0 + 1);
-        let dw = ((bw as f64 * scale).round() as usize).clamp(1, o.cell);
-        let dh = ((bh as f64 * scale).round() as usize).clamp(1, o.cell);
-        let small = resample(&img, s.x0, s.y0, bw, bh, dw, dh);
-
-        // Feet on the bottom row, anchor on the cell centre: exactly the
-        // placement PetPal assumes when it stands a creature on a ledge.
-        let (cell_x, cell_y) = (n % gc * o.cell, n / gc * o.cell);
-        let anchor_off = ((s.anchor_x - s.x0) as f64 * scale).round() as isize;
-        let ox = cell_x as isize + o.cell as isize / 2 - anchor_off;
-        let oy = (cell_y + o.cell - dh) as isize;
-
-        for y in 0..dh {
-            for x in 0..dw {
-                let p = small[y * dw + x];
-                if p[3] == 0 {
-                    continue;
-                }
-                let (tx, ty) = (ox + x as isize, oy + y as isize);
-                // Clip to this cell so a wide pose cannot bleed into its neighbour.
-                if tx < cell_x as isize || tx >= (cell_x + o.cell) as isize || ty < 0 || ty >= sh as isize {
-                    continue;
-                }
-                sheet[ty as usize * sw + tx as usize] = p;
-            }
-        }
-    }
+    println!(
+        "sprites    {} found, largest {}x{}, scaled by {:.3}",
+        f.found, f.largest.0, f.largest.1, f.scale
+    );
 
     std::fs::create_dir_all(&o.out_dir).map_err(|e| format!("{}: {e}", o.out_dir.display()))?;
-    write_png(&o.out_dir.join("creature.png"), &sheet, sw, sh)?;
-    std::fs::write(o.out_dir.join("sprite.toml"), manifest(gc, gr, o.cell))
+    write_png(&o.out_dir.join("creature.png"), &f.px, f.w, f.h)?;
+    std::fs::write(o.out_dir.join("sprite.toml"), manifest(f.cols, f.rows, f.cell))
         .map_err(|e| format!("{}: {e}", o.out_dir.display()))?;
-
-    println!("wrote      {}\\creature.png  ({sw}x{sh}, {}px cells)", o.out_dir.display(), o.cell);
+    println!(
+        "wrote      {}\\creature.png  ({}x{}, {}px cells)",
+        o.out_dir.display(),
+        f.w,
+        f.h,
+        f.cell
+    );
     println!("wrote      {}\\sprite.toml", o.out_dir.display());
     Ok(())
-}
-
-/// A manifest for the produced grid.
-///
-/// Rows 0-2 are assumed to be idle / walk / run, which is how these sheets are
-/// almost always laid out. Everything else is listed as comments with its frame
-/// numbers so it can be assigned by hand — guessing which pose means "annoyed"
-/// is not something a program should do silently.
-fn manifest(cols: usize, rows: usize, cell: usize) -> String {
-    let row_frames = |r: usize| -> String {
-        (0..cols).map(|c| (r * cols + c).to_string()).collect::<Vec<_>>().join(", ")
-    };
-    let mut s = String::new();
-    s.push_str("# Generated by tools/sheetconv.\n#\n");
-    s.push_str("# Frames are numbered left to right, top to bottom from 0.\n");
-    s.push_str("# Rows present in this sheet:\n");
-    for r in 0..rows {
-        s.push_str(&format!("#   row {r}: frames {}\n", row_frames(r)));
-    }
-    s.push_str(
-        "#\n# Recognised animations: idle walk run fall sleep annoyed drag alert sit\n\
-         # Anything omitted falls back to idle. See docs/SPRITES.md.\n\n",
-    );
-    s.push_str("image = \"creature.png\"\n");
-    s.push_str(&format!("frame_width = {cell}\n"));
-    s.push_str(&format!("frame_height = {cell}\n"));
-
-    for (name, r, ms) in [("idle", 0usize, 200u32), ("walk", 1, 90), ("run", 2, 55)] {
-        if r < rows {
-            s.push_str(&format!("\n[anims.{name}]\nframes = [{}]\nframe_ms = {ms}\n", row_frames(r)));
-        }
-    }
-    if rows > 3 {
-        s.push_str("\n# Remaining frames, to assign by hand:\n");
-        for r in 3..rows {
-            s.push_str(&format!("#   row {r}: {}\n", row_frames(r)));
-        }
-        s.push_str(
-            "#\n# for example:\n\
-             # [anims.sleep]\n\
-             # frames = [27, 28, 29, 30, 31]\n\
-             # frame_ms = 480\n",
-        );
-    }
-    s
 }
