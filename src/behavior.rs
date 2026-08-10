@@ -71,6 +71,15 @@ const JUMP_CLEARANCE: f32 = 50.0;
 const JUMP_DRAG_BIAS: f32 = 1.35;
 /// A ledge must be at least this wide before a full-length sprint is worth it.
 const SPRINT_MIN_RUN: i32 = 220;
+/// The shortest journey worth making. Below this the creature is shuffling,
+/// not walking, so it rests instead — which is what a real animal on a narrow
+/// perch does.
+const MIN_TRAVEL: f32 = 48.0;
+/// A surface with less usable width than this is a perch, not somewhere to
+/// roam. The creature mostly sits on one, because every "move" it is asked for
+/// there is a couple of steps and a turn — which is legal by the rules and
+/// reads as an animal trapped in a loop.
+const CRAMPED_SPAN: i32 = 240;
 /// How far the creature will deliberately drop to reach a lower surface.
 /// Further than this and it walks to an edge and falls instead.
 const HOP_MAX_DROP: i32 = 900;
@@ -911,30 +920,15 @@ impl Pet {
 
         // Restlessness stretches or squeezes how long a choice is held, so a
         // calm pet takes long rests and a restless one changes its mind often.
-        let rest_scale = 150 - roam;
         let move_scale = 55 + roam;
-        let rng = &mut *ctx.rng;
-        let hold = |rng: &mut Rng, lo: i32, hi: i32, scale: u32| {
-            (rng.range(lo, hi) as u32 * scale / 100).max(250)
-        };
 
-        if rng.below(100) >= roam {
-            // Settle: stand, sit, or turn on the spot to look around.
-            match rng.below(100) {
-                0..=54 => {
-                    let d = hold(rng, 1400, 4200, rest_scale);
-                    self.enter(State::Idle, d);
-                }
-                55..=87 => {
-                    let d = hold(rng, 2200, 6000, rest_scale);
-                    self.enter(State::Sit, d);
-                }
-                _ => {
-                    self.facing = -self.facing;
-                    let d = hold(rng, 500, 1200, rest_scale);
-                    self.enter(State::Idle, d);
-                }
-            }
+        // How much room there is decides how often it bothers moving at all.
+        let cramped = self
+            .ledge
+            .is_some_and(|l| l.x1 - l.x0 - 2 * self.margin < CRAMPED_SPAN);
+        let move_chance = if cramped { roam / 4 } else { roam };
+        if ctx.rng.below(100) >= move_chance {
+            self.rest(ctx);
             return;
         }
 
@@ -943,37 +937,78 @@ impl Pet {
         if ctx.rng.chance(sprint_chance) && self.sprint_across(ctx) {
             return;
         }
-        let rng = &mut *ctx.rng;
 
-        match rng.below(100) {
-            0..=63 => {
-                // Walk *somewhere*, rather than for a while in a coin-flipped
-                // direction. See `stroll_to`.
-                if !self.stroll_to(ctx) {
-                    let rng = &mut *ctx.rng;
-                    if rng.chance(45) {
-                        self.facing = -self.facing;
-                    }
-                    let d = hold(rng, 1200, 3600, move_scale);
-                    self.enter(State::Walk, d);
-                }
-            }
-            64..=81 => {
-                // Deliberately walk off the edge and drop to whatever is below
-                // — but only if there actually is something below.
-                self.dive = drop_available;
-                let d = hold(rng, 900, 2000, move_scale);
+        let choice = ctx.rng.below(100);
+        let moved = match choice {
+            // Deliberately walk off the edge and drop to whatever is below —
+            // but only if there actually is something below. Without that
+            // check this used to be a plain timed walk in whatever direction
+            // the creature happened to face, which on a short surface is a
+            // walk into the wall.
+            64..=81 if drop_available => {
+                self.dive = true;
+                let d = (ctx.rng.range(900, 2000) as u32 * move_scale / 100).max(250);
                 self.enter(State::Walk, d);
+                true
+            }
+            82..=99 => self.dash(ctx),
+            _ => self.stroll_to(ctx),
+        };
+
+        // Nowhere worth going. Rest instead of shuffling: a creature on a
+        // surface it cannot cross should look settled, not trapped. This is
+        // what produced the pacing at the end of a taskbar and on small
+        // windows — every "move" decision walked into a wall and turned round,
+        // 130 times in six minutes on a 120px ledge.
+        if !moved {
+            self.rest(ctx);
+        }
+    }
+
+    /// Stand, sit, or turn on the spot to look around.
+    fn rest(&mut self, ctx: &mut Ctx) {
+        let roam = ctx.cfg.roam.min(100) as u32;
+        let rest_scale = 150 - roam;
+        let rng = &mut *ctx.rng;
+        let hold = |rng: &mut Rng, lo: i32, hi: i32| {
+            (rng.range(lo, hi) as u32 * rest_scale / 100).max(250)
+        };
+        match rng.below(100) {
+            0..=54 => {
+                let d = hold(rng, 1400, 4200);
+                self.enter(State::Idle, d);
+            }
+            55..=87 => {
+                let d = hold(rng, 2200, 6000);
+                self.enter(State::Sit, d);
             }
             _ => {
-                // A dash, for personality.
-                if rng.chance(50) {
-                    self.facing = -self.facing;
-                }
-                let d = hold(rng, 500, 1400, move_scale);
-                self.enter(State::Run, d);
+                self.facing = -self.facing;
+                let d = hold(rng, 500, 1200);
+                self.enter(State::Idle, d);
             }
         }
+    }
+
+    /// A short burst at running speed, for personality.
+    ///
+    /// Like a stroll, it needs somewhere to go: a dash into a wall is a turn
+    /// on the spot with extra steps.
+    fn dash(&mut self, ctx: &mut Ctx) -> bool {
+        let Some(l) = self.ledge else { return false };
+        let (lo, hi) = ((l.x0 + self.margin) as f32, (l.x1 - self.margin) as f32);
+        let (room_left, room_right) = (self.x - lo, hi - self.x);
+        let go_left = room_left > room_right;
+        let room = room_left.max(room_right);
+        if room < MIN_TRAVEL * 2.0 {
+            return false;
+        }
+        let speed = (ctx.cfg.speed * self.speed_scale * RUN_MULTIPLIER).max(1.0);
+        let d = room.min(speed * 1.4);
+        self.facing = if go_left { -1 } else { 1 };
+        let ms = (d / speed * 1000.0) as u32;
+        self.enter(State::Run, ms.clamp(300, 4_000));
+        true
     }
 
     /// Walk to a chosen spot on the current surface.
@@ -1012,7 +1047,7 @@ impl Pet {
             (false, false) => room_left > room_right,
         };
         let room = if go_left { room_left } else { room_right };
-        if room < 24.0 {
+        if room < MIN_TRAVEL {
             return false;
         }
 
@@ -1948,5 +1983,73 @@ mod tests {
             pct(0.1),
             pct(0.9),
         );
+    }
+
+    /// A creature on a surface it cannot cross must settle, not pace.
+    ///
+    /// Reported as "gets caught in a loop near the end of the screen, walking
+    /// back and forth a hundred times before going anywhere". The cause was
+    /// that a "move" decision always moved: on a short ledge every one of them
+    /// was two steps into a wall and a turn around. Measured on a 120px window
+    /// ledge with hopping off, the creature turned **130 times in six
+    /// minutes**. It now rests when there is nowhere worth walking to, and
+    /// treats anything under `CRAMPED_SPAN` of usable width as a perch to sit
+    /// on rather than a place to roam.
+    #[test]
+    fn a_narrow_perch_is_for_sitting_on() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+
+        for width in [96i32, 120, 180, 260] {
+            for jump in [true, false] {
+                let mut cfg = Config::default();
+                cfg.chase_cursor = false;
+                cfg.jump_between_windows = jump;
+                cfg.sleep_after_idle_secs = 86_400;
+                cfg.cpu_annoy_percent = 100;
+                let w = World::for_test(
+                    vec![Monitor {
+                        rect: RECT { left: 0, top: 0, right: 1920, bottom: 1080 },
+                        work: RECT { left: 0, top: 0, right: 1920, bottom: 1035 },
+                    }],
+                    vec![
+                        Ledge { x0: 0, x1: 1920, y: 1035 },
+                        Ledge { x0: 40, x1: 40 + width, y: 880 },
+                    ],
+                );
+
+                let mut turns = 0;
+                let mut ticks_on_perch = 0;
+                for seed in 1..=6u64 {
+                    let (mut pet, mut rng) =
+                        settle_on_seeded(&set, &cfg, &w, (40 + width / 2) as f32, 860.0, seed);
+                    let mut facing = pet.facing;
+                    for _ in 0..2_400 {
+                        // one minute each
+                        let mut ctx = Ctx {
+                            world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
+                            idle_ms: 0, cfg: &cfg, rng: &mut rng,
+                        };
+                        pet.update(25, &mut ctx, &set);
+                        if pet.y as i32 == 880 {
+                            ticks_on_perch += 1;
+                            if pet.facing != facing {
+                                turns += 1;
+                            }
+                        }
+                        facing = pet.facing;
+                    }
+                }
+
+                // Per minute actually spent up there, so a creature that hops
+                // away quickly is not credited for good behaviour.
+                let minutes = (ticks_on_perch as f32 * 0.025 / 60.0).max(0.05);
+                let per_min = turns as f32 / minutes;
+                assert!(
+                    per_min <= 8.0,
+                    "{width}px perch, jumping {}: turned around {per_min:.0} times a minute",
+                    if jump { "on" } else { "off" },
+                );
+            }
+        }
     }
 }
