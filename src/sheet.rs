@@ -423,6 +423,65 @@ mod tests {
         }
     }
 
+    /// A clip must run at the speed it says, whatever the caller's tick rate.
+    ///
+    /// After T milliseconds a clip of `frame_ms` is on frame `(T / frame_ms) %
+    /// n`, full stop — the caller's tick size must not enter into it. The
+    /// editor's preview used to reset its accumulator instead of keeping the
+    /// remainder, which rounds every frame up to a whole tick: on a 40ms timer
+    /// a 55ms run frame played at 80ms and a 90ms walk at 120ms. The author
+    /// would then pick a speed that looked right in the preview and get a
+    /// different one on the desktop.
+    #[test]
+    fn a_clip_runs_at_its_stated_speed_on_any_tick() {
+        use crate::sprites::step_clip;
+
+        for &frame_ms in &[16u32, 38, 55, 65, 90, 120, 240, 480] {
+            for &tick in &[1u32, 13, 16, 25, 40, 100] {
+                for &n in &[2usize, 3, 8] {
+                    let (mut frame, mut acc) = (0usize, 0u32);
+                    let mut elapsed = 0u32;
+                    // Five seconds is several loops of even the slowest clip.
+                    while elapsed + tick <= 5_000 {
+                        step_clip(&mut frame, &mut acc, tick, frame_ms, n);
+                        elapsed += tick;
+                        assert_eq!(
+                            frame,
+                            (elapsed / frame_ms) as usize % n,
+                            "frame_ms {frame_ms}, tick {tick}, n {n}, at {elapsed}ms"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The reported "changed" flag drives the repaint, so a missed one is a
+    /// frame the viewer never sees and a spurious one is a wasted redraw.
+    #[test]
+    fn step_clip_reports_exactly_when_the_frame_changes() {
+        use crate::sprites::step_clip;
+
+        let (mut frame, mut acc) = (0usize, 0u32);
+        // 100ms frames, 40ms ticks: changes at 100, 200, 300...
+        let expect = [false, false, true, false, true, false, false, true];
+        for (i, &want) in expect.iter().enumerate() {
+            let before = frame;
+            let got = step_clip(&mut frame, &mut acc, 40, 100, 4);
+            assert_eq!(got, want, "tick {i}");
+            assert_eq!(got, frame != before, "tick {i}: flag disagrees with the frame");
+        }
+
+        // A single frame never changes, however long you wait.
+        let (mut f1, mut a1) = (0usize, 0u32);
+        assert!(!step_clip(&mut f1, &mut a1, 5_000, 50, 1));
+        assert_eq!(f1, 0);
+
+        // An empty clip is not a crash.
+        let (mut f0, mut a0) = (0usize, 0u32);
+        assert!(!step_clip(&mut f0, &mut a0, 1_000, 50, 0));
+    }
+
     /// Every built-in must actually draw every animation, and its climb has to
     /// be its own artwork rather than a rename of the walk cycle. Adding a
     /// creature is easy to half-finish: a `Legs` arm that falls through to the

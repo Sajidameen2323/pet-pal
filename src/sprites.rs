@@ -54,6 +54,33 @@ impl Anim {
     }
 }
 
+/// Advance a playing clip by `dt` milliseconds.
+///
+/// Returns whether the displayed frame changed. The accumulator keeps the
+/// remainder rather than being reset, so a clip runs at its stated speed no
+/// matter how the caller's ticks line up with it — resetting rounds every frame
+/// up to a whole tick, which at a 40ms tick turns a 55ms frame into 80ms.
+///
+/// Shared by the running creature and by the sprite editor's preview. They have
+/// to agree exactly: the whole point of the preview is choosing a `frame_ms`
+/// that will look the same on the desktop, and two copies of this arithmetic
+/// would eventually stop matching.
+pub fn step_clip(frame: &mut usize, acc: &mut u32, dt: u32, frame_ms: u32, n: usize) -> bool {
+    if n == 0 {
+        return false;
+    }
+    let ms = frame_ms.max(16);
+    *acc += dt;
+    let advance = (*acc / ms) as usize;
+    if advance == 0 {
+        return false;
+    }
+    *acc %= ms;
+    let before = *frame;
+    *frame = (*frame + advance) % n;
+    *frame != before
+}
+
 pub struct Frame {
     pub px: Vec<u32>,
 }

@@ -1063,13 +1063,13 @@ impl Pet {
             self.frame = 0;
             self.frame_acc = 0;
         }
-        let ms = set.clip(a).frame_ms.max(16);
-        self.frame_acc += dt;
-        let advance = (self.frame_acc / ms) as usize;
-        if advance > 0 {
-            self.frame_acc %= ms;
-            self.frame = (self.frame + advance) % set.frame_count(a).max(1);
-        }
+        crate::sprites::step_clip(
+            &mut self.frame,
+            &mut self.frame_acc,
+            dt,
+            set.clip(a).frame_ms,
+            set.frame_count(a),
+        );
     }
 
     /// How long the app may sleep before this pet needs redrawing.

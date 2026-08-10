@@ -69,6 +69,12 @@ const PAD: i32 = 12;
 /// Height of the two rows of controls above the sheet.
 const HEAD_H: i32 = 108;
 const FOOT_H: i32 = 46;
+/// Right-hand panel, measured from the bottom of the client area so the
+/// controls and the painted playback box cannot drift into each other.
+const PLAY_H: i32 = 150;
+const PLAY_BOTTOM_GAP: i32 = 52;
+const PLAY_Y: i32 = WIN_H - PLAY_BOTTOM_GAP - PLAY_H;
+const PLAY_LABEL_Y: i32 = PLAY_Y - 20;
 
 const ID_BROWSE: isize = 1001;
 const ID_NAME: isize = 1002;
@@ -174,6 +180,13 @@ struct Editor {
 
     play: usize,
     play_acc: u32,
+    /// When the preview clock was last advanced. Timer messages are low
+    /// priority and land whenever the queue is empty, so counting ticks and
+    /// assuming they are 40ms apart makes the preview drift.
+    play_last: u64,
+    /// Where the playback box was last drawn, so it can be repainted without
+    /// recompositing the whole sheet behind it.
+    play_rect: RECT,
     font: isize,
     small: isize,
 }
@@ -312,7 +325,9 @@ unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(ed) as isize);
             OPEN.with(|o| *o.borrow_mut() = hwnd);
             DragAcceptFiles(hwnd, 1);
-            SetTimer(hwnd, TIMER_PLAY, 40, None);
+            // 16ms: the shortest frame_ms the loader accepts, so every legal
+            // speed is representable.
+            SetTimer(hwnd, TIMER_PLAY, 16, None);
             return 0;
         }
 
@@ -550,12 +565,37 @@ unsafe fn build(hwnd: HWND) -> Editor {
 
         // The numbers themselves, so what gets written is on screen before it
         // is written. Playback order, left to right.
+        //
+        // The panel is laid out in bands measured from the bottom of the
+        // window, because the playback box is drawn in WM_PAINT against the
+        // client rect while everything else is a control at a fixed position —
+        // and the two overlapped when they were derived separately.
         mk("STATIC", "Frames, in order:", SS_LEFT, px, y + 70, 160, 18, 0);
-        let frames_label = mk("STATIC", "none yet", SS_LEFT, px, y + 90, PANEL_W - 12, 110, 0);
+        let frames_label = mk(
+            "STATIC",
+            "none yet",
+            SS_LEFT,
+            px,
+            y + 90,
+            PANEL_W - 12,
+            PLAY_LABEL_Y - (y + 90) - 8,
+            0,
+        );
+        mk(
+            "STATIC",
+            "Preview, at the speed above",
+            SS_LEFT,
+            px,
+            PLAY_LABEL_Y,
+            PANEL_W - 12,
+            18,
+            0,
+        );
 
         // -- footer --------------------------------------------------------
-        mk("BUTTON", "Add sprite", BS_DEFPUSH, WIN_W - 220, WIN_H - FOOT_H - 26, 100, 30, ID_ADD);
-        mk("BUTTON", "Cancel", BS_PUSH, WIN_W - 112, WIN_H - FOOT_H - 26, 92, 30, ID_CANCEL);
+        let foot_y = WIN_H - 40;
+        mk("BUTTON", "Add sprite", BS_DEFPUSH, WIN_W - 220, foot_y, 100, 30, ID_ADD);
+        mk("BUTTON", "Cancel", BS_PUSH, WIN_W - 112, foot_y, 92, 30, ID_CANCEL);
 
         let mut ed = Editor {
             hwnd,
@@ -589,6 +629,8 @@ unsafe fn build(hwnd: HWND) -> Editor {
             last_cell: -1,
             play: 0,
             play_acc: 0,
+            play_last: crate::win::now_ms(),
+            play_rect: RECT { left: 0, top: 0, right: 0, bottom: 0 },
             font,
             small,
         };
@@ -634,6 +676,7 @@ fn on_command(ed: &mut Editor, id: isize, code: u32) {
                 f.retain(|&c| c < n);
             }
             sync_list(ed);
+            restart_playback(ed);
             redraw(ed);
         }
         ID_MS if code == EN_CHANGE => {
@@ -644,18 +687,20 @@ fn on_command(ed: &mut Editor, id: isize, code: u32) {
             let i = unsafe { SendMessageW(ed.list, LB_GETCURSEL, 0, 0) };
             if i >= 0 && (i as usize) < ANIM_COUNT {
                 ed.sel = i as usize;
-                ed.play = 0;
+                restart_playback(ed);
                 set_text(ed.ms_edit, &ed.ms[ed.sel].to_string());
                 redraw(ed);
             }
         }
         ID_ROW => {
             assign_row(ed);
+            restart_playback(ed);
             redraw(ed);
         }
         ID_CLEAR => {
             ed.frames[ed.sel].clear();
             sync_list(ed);
+            restart_playback(ed);
             redraw(ed);
         }
         ID_FIT => {
@@ -668,6 +713,7 @@ fn on_command(ed: &mut Editor, id: isize, code: u32) {
                 Err(e) => set_text(ed.hint, &format!("Could not fit a grid: {e}")),
             }
             sync_list(ed);
+            restart_playback(ed);
             redraw(ed);
         }
         ID_ORIGINAL => {
@@ -681,6 +727,7 @@ fn on_command(ed: &mut Editor, id: isize, code: u32) {
                 &format!("{}x{} as it is on disk, no fitting.", ed.iw, ed.ih),
             );
             sync_list(ed);
+            restart_playback(ed);
             redraw(ed);
         }
         ID_MENU_OPEN => browse(ed),
@@ -898,11 +945,13 @@ fn toggle(ed: &mut Editor, cell: u16) {
         ed.frames[ed.sel].push(cell);
     }
     sync_list(ed);
+    restart_playback(ed);
 }
 
 fn remove(ed: &mut Editor, cell: u16) {
     ed.frames[ed.sel].retain(|&c| c != cell);
     sync_list(ed);
+    restart_playback(ed);
 }
 
 fn sync_list(ed: &Editor) {
@@ -930,21 +979,40 @@ fn sync_list(ed: &Editor) {
     }
 }
 
+/// Start the selected animation from its first frame.
+///
+/// The running creature restarts at frame 0 whenever its animation changes, so
+/// the preview must too. Otherwise selecting a two-frame clip while sitting on
+/// frame 6 of an eight-frame one shows a different starting pose than the pet
+/// will, and editing the frame list under a running clip shifts every frame
+/// after the edit.
+fn restart_playback(ed: &mut Editor) {
+    ed.play = 0;
+    ed.play_acc = 0;
+    ed.play_last = crate::win::now_ms();
+}
+
 fn advance(ed: &mut Editor) {
+    let now = crate::win::now_ms();
+    // Clamp: a window that was dragged, or a machine that slept, must not make
+    // the preview skip a hundred frames at once.
+    let dt = (now.saturating_sub(ed.play_last)).min(250) as u32;
+    ed.play_last = now;
     let n = ed.frames[ed.sel].len();
-    if n == 0 {
-        return;
-    }
-    ed.play_acc += 40;
-    if ed.play_acc >= ed.ms[ed.sel] {
-        ed.play_acc = 0;
-        ed.play = (ed.play + 1) % n;
-        redraw(ed);
+    if crate::sprites::step_clip(&mut ed.play, &mut ed.play_acc, dt, ed.ms[ed.sel], n) {
+        redraw_play(ed);
     }
 }
 
 fn redraw(ed: &Editor) {
     unsafe { InvalidateRect(ed.hwnd, null_mut(), 0) };
+}
+
+/// Just the playback box. Invalidating the whole window for every frame
+/// recomposites the entire sheet 60 times a second, which on a large sheet
+/// makes the preview itself stutter.
+fn redraw_play(ed: &Editor) {
+    unsafe { InvalidateRect(ed.hwnd, &ed.play_rect, 0) };
 }
 
 // ---------------------------------------------------------------------------
@@ -988,8 +1056,13 @@ fn paint(ed: &mut Editor) {
 
         // Live playback of the selected animation, under the panel.
         let px = client.right - PANEL_W - PAD;
-        let py = client.bottom - FOOT_H - 190;
-        draw_play(ed, dc, px, py, PANEL_W - 12, 170);
+        ed.play_rect = RECT {
+            left: px,
+            top: PLAY_Y,
+            right: px + PANEL_W - 12,
+            bottom: PLAY_Y + PLAY_H,
+        };
+        draw_play(ed, dc, px, PLAY_Y, PANEL_W - 12, PLAY_H);
 
         EndPaint(ed.hwnd, &ps);
     }
