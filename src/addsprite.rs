@@ -25,7 +25,13 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OFN_FILEMUSTEXIST, OPENFILENAMEW};
-use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
+use windows_sys::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+};
+use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows_sys::Win32::UI::Shell::{
+    DragAcceptFiles, DragFinish, DragQueryFileW, ShellExecuteW, HDROP,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::Config;
@@ -82,6 +88,12 @@ const ID_BG: isize = 1015;
 const ID_COLS: isize = 1016;
 const ID_ROWS: isize = 1017;
 
+// Menu bar.
+const ID_MENU_OPEN: isize = 2001;
+const ID_MENU_PROMPT: isize = 2002;
+const ID_MENU_HELP: isize = 2003;
+const ID_MENU_GUIDE: isize = 2004;
+
 const TIMER_PLAY: usize = 1;
 
 // Control styles. windows-sys does not surface the `SS_*` family at all, and
@@ -96,6 +108,8 @@ const ES_NUMBER_: u32 = 0x2000;
 const BS_PUSH: u32 = 0x0000;
 const BS_DEFPUSH: u32 = 0x0001;
 const LBS_NOTIFY_: u32 = 0x0001;
+const ES_MULTILINE_: u32 = 0x0004;
+const ES_READONLY_: u32 = 0x0800;
 
 fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
@@ -219,7 +233,9 @@ pub fn open() {
         // a border and a caption bar out.
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         let mut want = RECT { left: 0, top: 0, right: WIN_W, bottom: WIN_H };
-        AdjustWindowRectEx(&mut want, style, 0, 0);
+        // `true` for the menu bar: it eats a row of the client area otherwise,
+        // and every control below is placed at an absolute coordinate.
+        AdjustWindowRectEx(&mut want, style, 1, 0);
         let hwnd = CreateWindowExW(
             0,
             class.as_ptr(),
@@ -237,6 +253,7 @@ pub fn open() {
         if hwnd.is_null() {
             return;
         }
+        SetMenu(hwnd, build_menu());
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
     }
@@ -249,6 +266,39 @@ pub fn is_dialog_message(msg: *mut MSG) -> bool {
         return false;
     }
     unsafe { IsDialogMessageW(hwnd, msg) != 0 }
+}
+
+/// Two short menus. Everything here is also reachable from a button except the
+/// prompt and the help, which have nowhere sensible to live in the layout.
+unsafe fn build_menu() -> HMENU {
+    unsafe {
+        let bar = CreateMenu();
+        let sheet = CreatePopupMenu();
+        AppendMenuW(sheet, MF_STRING, ID_MENU_OPEN as usize, wide("&Open PNG...").as_ptr());
+        AppendMenuW(
+            sheet,
+            MF_STRING,
+            ID_MENU_PROMPT as usize,
+            wide("&Copy AI prompt to clipboard").as_ptr(),
+        );
+        AppendMenuW(bar, MF_POPUP, sheet as usize, wide("&Sheet").as_ptr());
+
+        let help = CreatePopupMenu();
+        AppendMenuW(
+            help,
+            MF_STRING,
+            ID_MENU_HELP as usize,
+            wide("&What the controls do").as_ptr(),
+        );
+        AppendMenuW(
+            help,
+            MF_STRING,
+            ID_MENU_GUIDE as usize,
+            wide("Open the full &guide").as_ptr(),
+        );
+        AppendMenuW(bar, MF_POPUP, help as usize, wide("&Help").as_ptr());
+        bar
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +683,10 @@ fn on_command(ed: &mut Editor, id: isize, code: u32) {
             sync_list(ed);
             redraw(ed);
         }
+        ID_MENU_OPEN => browse(ed),
+        ID_MENU_PROMPT => copy_prompt(ed),
+        ID_MENU_HELP => show_help(ed.hwnd),
+        ID_MENU_GUIDE => open_guide(ed.hwnd),
         ID_ADD => add(ed),
         ID_CANCEL => unsafe {
             DestroyWindow(ed.hwnd);
@@ -1355,6 +1409,305 @@ fn write_png(path: &Path, px: &[u32], w: u32, h: u32) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// Help, and the prompt
+// ---------------------------------------------------------------------------
+
+/// What each control does *to the result*.
+///
+/// Written around the values rather than the widgets. "trim base" is obvious as
+/// a label and useless as an explanation, because the question in the reader's
+/// head is "what number goes in it, and how will I know it was wrong".
+const HELP: &str = concat!(
+    "WHAT EACH CONTROL DOES\r\n",
+    "\r\n",
+    "The window works top to bottom: load a sheet, make the grid fit it, then\r\n",
+    "say which cells belong to which animation.\r\n",
+    "\r\n",
+    "\r\n",
+    "1. SHEET\r\n",
+    "\r\n",
+    "  Browse, or drop a PNG anywhere on this window. It needs real\r\n",
+    "  transparency, or a plain background that can be removed for you.\r\n",
+    "\r\n",
+    "\r\n",
+    "2. FIX   - only matters for a sheet that is not already on a grid\r\n",
+    "\r\n",
+    "  A sheet from an image generator is a picture OF a sprite sheet: the\r\n",
+    "  poses sit wherever they landed, there are wide margins, and it is far\r\n",
+    "  larger than the pixel art it depicts. Slicing that on any cell size\r\n",
+    "  cuts creatures in half. This row re-lays the poses on a real grid.\r\n",
+    "\r\n",
+    "  It runs automatically when you load a sheet, and is skipped entirely\r\n",
+    "  if the sheet is already on an exact grid - refitting would resample\r\n",
+    "  art that is already correct and soften it.\r\n",
+    "\r\n",
+    "  trim base   Pixels cut off the BOTTOM of every pose, measured in the\r\n",
+    "              original image.\r\n",
+    "                0         nothing cut. Right unless each pose stands on\r\n",
+    "                          a painted plate or shadow.\r\n",
+    "                too low   a pale sliver is left under the feet, and the\r\n",
+    "                          creature hovers that far above your taskbar.\r\n",
+    "                too high  starts eating the feet.\r\n",
+    "              Typical for a 1500px-wide sheet: 10 to 25. Change it,\r\n",
+    "              press Fit to grid, look, adjust.\r\n",
+    "\r\n",
+    "  remove bg   Tolerance for deleting the background, flooding inward\r\n",
+    "              from the edges of the image.\r\n",
+    "                blank     decide for me. If the sheet reads as one huge\r\n",
+    "                          sprite, the background is opaque, so it goes.\r\n",
+    "                1 to 15   near-identical pixels only. For a flat colour.\r\n",
+    "                30        the default. Copes with a gradient or vignette.\r\n",
+    "                45 and up aggressive. Use if a haze survives.\r\n",
+    "                too high  eats the creature's own outline; poses start\r\n",
+    "                          losing edges or disappearing.\r\n",
+    "              Because it floods from the edges, a colour INSIDE the\r\n",
+    "              creature - white eyes, a pale chest - is always kept.\r\n",
+    "\r\n",
+    "  cols, rows  Force the grid instead of detecting it.\r\n",
+    "                blank     detect. Nearly always right, and what you want.\r\n",
+    "                a number  splits the WHOLE image into that many equal\r\n",
+    "                          bands. Wrong the moment the sheet has margins:\r\n",
+    "                          the outer cells come out empty.\r\n",
+    "              Only for when two poses touch and got counted as one. The\r\n",
+    "              giveaway is a cell count lower than you expect.\r\n",
+    "\r\n",
+    "  Fit to grid    Re-run with the current values. Always starts from the\r\n",
+    "                 original file, so trying numbers costs nothing.\r\n",
+    "  Use original   Discard the fitting; use the file exactly as it is.\r\n",
+    "\r\n",
+    "  The line at the top right reports the grid it found, how many sprites,\r\n",
+    "  and how much it scaled them.\r\n",
+    "\r\n",
+    "\r\n",
+    "3. GRID\r\n",
+    "\r\n",
+    "  cell w x h  The size of one frame, in the sheet's own pixels. The grid\r\n",
+    "              drawn over the sheet uses these two numbers - if the lines\r\n",
+    "              do not sit cleanly between the poses, they are wrong.\r\n",
+    "              After fitting they are already correct.\r\n",
+    "              Changing them renumbers every cell, so assigned frames\r\n",
+    "              that no longer exist are dropped.\r\n",
+    "  Guess       The cell size nearest 64 that divides the sheet exactly.\r\n",
+    "  name        The folder name, and the label in the Sprite menu.\r\n",
+    "              Letters, numbers and dashes; anything else becomes a dash.\r\n",
+    "\r\n",
+    "\r\n",
+    "ASSIGNING ANIMATIONS\r\n",
+    "\r\n",
+    "  Pick an animation in the list, then click cells in the sheet in the\r\n",
+    "  order they should play.\r\n",
+    "\r\n",
+    "    click         add the cell to the end of the selected animation\r\n",
+    "    click again   remove it\r\n",
+    "    drag          add every cell you pass over\r\n",
+    "    right-click   remove a cell\r\n",
+    "    Whole row     assign the whole row containing the last cell picked\r\n",
+    "    Clear         empty the selected animation\r\n",
+    "\r\n",
+    "  A cell in the selected animation is outlined in orange and shows its\r\n",
+    "  POSITION in that animation (1, 2, 3...) rather than its cell number.\r\n",
+    "  A cell outlined in blue already belongs to another animation. Sharing\r\n",
+    "  is allowed, but it is usually a mistake.\r\n",
+    "\r\n",
+    "  ms per frame  How long each frame shows, in thousandths of a second.\r\n",
+    "                Lower is faster. 240 is a slow idle, 55 is a run. The\r\n",
+    "                preview box plays at this speed, so set it by eye.\r\n",
+    "\r\n",
+    "\r\n",
+    "WHAT HAS TO BE FILLED IN\r\n",
+    "\r\n",
+    "  Only idle. Every animation left empty falls back to idle, except\r\n",
+    "  climb, which falls back to walk. A sheet with one idle frame already\r\n",
+    "  works; idle plus walk already feels alive.\r\n",
+    "\r\n",
+    "\r\n",
+    "IF THE RESULT LOOKS WRONG\r\n",
+    "\r\n",
+    "  invisible in one pose    those cells are empty. An empty cell is not\r\n",
+    "                           an error; the creature just disappears.\r\n",
+    "  hovers above surfaces    empty rows below the feet. Raise trim base.\r\n",
+    "  sinks into the taskbar   feet drawn past the bottom of the cell.\r\n",
+    "  hugs one end of a ledge  the body is off-centre in its cell.\r\n",
+    "  faces backwards          art drawn facing left. Everything must face\r\n",
+    "                           right; PetPal mirrors it to walk the other way.\r\n",
+    "  changes size as it       the poses are not all the same size on the\r\n",
+    "  animates                 sheet.\r\n",
+);
+
+/// The prompt, lifted out of the shipped guide rather than written twice.
+///
+/// The guide's copy is the one people read and the one the tests check; a
+/// second copy here would be the one that quietly goes stale.
+fn ai_prompt() -> Option<String> {
+    let guide = crate::config::SPRITE_GUIDE;
+    let start = guide.find("Generate ONE single image")?;
+    let end = guide[start..].find("\n```")? + start;
+    Some(guide[start..end].replace('\n', "\r\n"))
+}
+
+fn copy_prompt(ed: &Editor) {
+    let Some(text) = ai_prompt() else {
+        return warn(ed.hwnd, "The prompt could not be found in the guide.");
+    };
+    if let Err(e) = set_clipboard(ed.hwnd, &text) {
+        return warn(ed.hwnd, &format!("Could not copy to the clipboard.\n\n{e}"));
+    }
+    info(
+        ed.hwnd,
+        "Prompt copied.\n\n\
+         Paste it into an image generator and replace the line beginning \
+         \"THE CREATURE:\" with your own description.\n\n\
+         It asks for one image: 8 squares across, 6 down, 48 in total. Row 1 \
+         is idle, row 2 walking, row 3 running, and the last three rows are \
+         split between the other seven animations.\n\n\
+         Drop the result back on this window - it will fit the grid for you.",
+    );
+}
+
+fn set_clipboard(hwnd: HWND, text: &str) -> Result<(), String> {
+    let wide_text = wide(text);
+    let bytes = wide_text.len() * 2;
+    unsafe {
+        if OpenClipboard(hwnd) == 0 {
+            return Err("the clipboard is in use by another program".into());
+        }
+        EmptyClipboard();
+        let h = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if h.is_null() {
+            CloseClipboard();
+            return Err("out of memory".into());
+        }
+        let p = GlobalLock(h) as *mut u16;
+        if p.is_null() {
+            CloseClipboard();
+            return Err("could not lock the clipboard buffer".into());
+        }
+        std::ptr::copy_nonoverlapping(wide_text.as_ptr(), p, wide_text.len());
+        GlobalUnlock(h);
+        // CF_UNICODETEXT. On success the clipboard takes ownership of the handle.
+        if SetClipboardData(13, h as _).is_null() {
+            CloseClipboard();
+            return Err("the clipboard refused the text".into());
+        }
+        CloseClipboard();
+    }
+    Ok(())
+}
+
+/// A read-only scrolling window rather than a message box: this is reference
+/// text you read *while* using the controls it describes, so it must not be
+/// modal and it must not clip.
+fn show_help(owner: HWND) {
+    unsafe {
+        let hinstance = GetModuleHandleW(null_mut());
+        let class = wide("PetPalSpriteHelp");
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            style: 0,
+            lpfnWndProc: Some(help_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hinstance as _,
+            hIcon: LoadIconW(hinstance as _, 1 as *const u16),
+            hCursor: LoadCursorW(null_mut(), IDC_ARROW),
+            hbrBackground: CTL_BG.with(|b| *b.borrow()) as _,
+            lpszMenuName: null_mut(),
+            lpszClassName: class.as_ptr(),
+            hIconSm: LoadIconW(hinstance as _, 1 as *const u16),
+        };
+        RegisterClassExW(&wc);
+
+        let style = WS_OVERLAPPEDWINDOW;
+        let mut want = RECT { left: 0, top: 0, right: 720, bottom: 660 };
+        AdjustWindowRectEx(&mut want, style, 0, 0);
+        let hwnd = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            wide("Add a sprite - help").as_ptr(),
+            style,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            want.right - want.left,
+            want.bottom - want.top,
+            owner,
+            null_mut(),
+            hinstance as _,
+            null_mut(),
+        );
+        if hwnd.is_null() {
+            return;
+        }
+        let edit = CreateWindowExW(
+            0,
+            wide("EDIT").as_ptr(),
+            wide(HELP).as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE_ | ES_READONLY_,
+            0,
+            0,
+            720,
+            660,
+            hwnd,
+            null_mut(),
+            hinstance as _,
+            null_mut(),
+        );
+        let font = CreateFontW(
+            -13, 0, 0, 0, FW_NORMAL as i32, 0, 0, 0, 0, 0, 0, 0, 0,
+            wide("Consolas").as_ptr(),
+        );
+        SendMessageW(edit, WM_SETFONT, font as WPARAM, 1);
+        ShowWindow(hwnd, SW_SHOW);
+    }
+}
+
+/// Keeps the edit filling the frame, and paints it in the same dark scheme as
+/// the editor rather than leaving one white rectangle on screen.
+unsafe extern "system" fn help_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_SIZE => {
+                let child = GetWindow(hwnd, GW_CHILD);
+                if !child.is_null() {
+                    let mut rc: RECT = std::mem::zeroed();
+                    GetClientRect(hwnd, &mut rc);
+                    MoveWindow(child, 0, 0, rc.right, rc.bottom, 1);
+                }
+                0
+            }
+            WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => {
+                let dc = wp as windows_sys::Win32::Graphics::Gdi::HDC;
+                SetBkMode(dc, TRANSPARENT as i32);
+                SetTextColor(dc, rgb(0xE6, 0xE8, 0xEE));
+                CTL_FIELD.with(|b| *b.borrow()) as LRESULT
+            }
+            WM_CLOSE => {
+                DestroyWindow(hwnd);
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}
+
+fn open_guide(hwnd: HWND) {
+    let path = Config::sprites_dir().join("HOW-TO-make-a-sprite.txt");
+    if !path.exists() {
+        let _ = std::fs::create_dir_all(Config::sprites_dir());
+        let _ = std::fs::write(&path, crate::config::SPRITE_GUIDE);
+    }
+    unsafe {
+        ShellExecuteW(
+            hwnd,
+            wide("open").as_ptr(),
+            wide(&path.to_string_lossy()).as_ptr(),
+            null_mut(),
+            null_mut(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Small control helpers
 // ---------------------------------------------------------------------------
 
@@ -1376,6 +1729,17 @@ fn get_text(h: HWND) -> String {
 
 fn read_num(h: HWND) -> i32 {
     get_text(h).trim().parse().unwrap_or(0)
+}
+
+fn info(hwnd: HWND, msg: &str) {
+    unsafe {
+        MessageBoxW(
+            hwnd,
+            wide(msg).as_ptr(),
+            wide("Add a sprite").as_ptr(),
+            MB_ICONINFORMATION,
+        );
+    }
 }
 
 fn warn(hwnd: HWND, msg: &str) {
@@ -1773,5 +2137,101 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The prompt on the clipboard is pulled out of the guide at runtime, so it
+    /// can go missing without anyone noticing. Check it is there, and that it
+    /// still says the things the rest of the tool assumes it says.
+    #[test]
+    fn the_clipboard_prompt_matches_the_documented_layout() {
+        let p = ai_prompt().expect("the guide must contain the AI prompt");
+        assert!(p.len() > 800, "suspiciously short prompt: {} bytes", p.len());
+        assert!(p.ends_with("
+") || p.ends_with("shadows."), "prompt looks truncated");
+        // Windows line endings, or it pastes as one line into most tools.
+        assert!(p.contains("
+"), "prompt must use CRLF for the clipboard");
+        assert!(!p.contains("```"), "the fence must not be included");
+
+        for needed in [
+            "8 columns and 6 rows",
+            "48 equal squares",
+            "THE CREATURE:",
+            "FACES RIGHT",
+            "transparent background",
+        ] {
+            assert!(
+                p.to_lowercase().contains(&needed.to_lowercase()),
+                "prompt no longer mentions {needed:?}"
+            );
+        }
+        // Every animation the tool can assign should be described somewhere in
+        // the prompt, or the generated sheet will be missing poses.
+        let low = p.to_lowercase();
+        for word in ["idle", "walk", "run", "climb", "fall", "asleep", "annoyed", "surprised", "sitting", "held"] {
+            assert!(low.contains(word), "prompt does not ask for {word:?}");
+        }
+    }
+
+    /// Every control on the window should be explained. A control nobody can
+    /// find out about might as well not exist.
+    #[test]
+    fn the_help_covers_every_control() {
+        for phrase in [
+            "trim base", "remove bg", "cols, rows", "Fit to grid", "Use original",
+            "cell w x h", "Guess", "name", "ms per frame", "Whole row", "Clear",
+        ] {
+            assert!(HELP.contains(phrase), "help never mentions {phrase:?}");
+        }
+        // And it should say what the values do, not just name them.
+        assert!(HELP.contains("too high"), "help should describe wrong values");
+        assert!(HELP.contains("blank"), "help should say what blank means");
+    }
+
+
+    /// The help window cannot be photographed -- a standard EDIT does not
+    /// answer WM_PRINTCLIENT, so PrintWindow returns a blank rectangle no
+    /// matter how correct the window is, and capturing the screen instead
+    /// grabs whatever happens to be in front. So check it structurally: the
+    /// control exists, holds all of the text, is visible and fills the frame.
+    ///
+    /// Creates a real window, so it is ignored by default:
+    /// `cargo test -- --ignored --test-threads=1 the_help_window_builds`.
+    #[test]
+    #[ignore]
+    fn the_help_window_builds() {
+        unsafe {
+            CTL_BG.with(|b| {
+                if *b.borrow() == 0 {
+                    *b.borrow_mut() = CreateSolidBrush(rgb(0x2B, 0x2E, 0x38)) as isize;
+                }
+            });
+            CTL_FIELD.with(|b| {
+                if *b.borrow() == 0 {
+                    *b.borrow_mut() = CreateSolidBrush(rgb(0x1E, 0x20, 0x28)) as isize;
+                }
+            });
+            show_help(null_mut());
+            let hwnd = FindWindowW(wide("PetPalSpriteHelp").as_ptr(), null_mut());
+            assert!(!hwnd.is_null(), "the help window did not open");
+
+            let child = GetWindow(hwnd, GW_CHILD);
+            assert!(!child.is_null(), "the help text control was not created");
+            assert_eq!(
+                GetWindowTextLengthW(child) as usize,
+                HELP.chars().count(),
+                "the control did not take all of the help text"
+            );
+            assert_ne!(IsWindowVisible(child), 0, "the help text control is hidden");
+
+            let mut rc: RECT = std::mem::zeroed();
+            GetClientRect(child, &mut rc);
+            assert!(rc.right > 600 && rc.bottom > 500, "the control is {}x{}", rc.right, rc.bottom);
+
+            // The two brushes the paint handler picks between must not be the
+            // same colour as the text, or the window renders as a blank slab.
+            assert_ne!(CTL_FIELD.with(|b| *b.borrow()), 0);
+            DestroyWindow(hwnd);
+        }
     }
 }

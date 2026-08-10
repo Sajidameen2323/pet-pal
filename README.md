@@ -104,6 +104,17 @@ to it. No frame numbers are typed at any point, which is where hand-written
 manifests usually go wrong: an index into an empty cell is not an error, it just
 makes the creature invisible.
 
+No sheet yet? **Sheet → Copy AI prompt to clipboard** hands you a prompt that
+specifies the layout exactly — one image, 8 squares across by 6 down, row 1
+idle, row 2 walking, row 3 running, the last three rows split between the other
+seven animations, facing right, feet on the bottom edge. Paste it into an image
+generator, drop the result back on the window, and it fits the grid for you.
+The prompt is extracted from the shipped guide at runtime rather than kept as a
+second copy, so the two cannot drift.
+
+**Help → What the controls do** explains every box in terms of its values —
+what a number does to the result and how you can tell it was wrong.
+
 The same fitting is available as [`sheetconv`](tools/sheetconv/) on the command
 line for batches — one implementation, included by both.
 

@@ -20,6 +20,8 @@ features = [
     "Win32_UI_Controls",
     "Win32_UI_Controls_Dialogs",
     "Win32_Storage_Xps",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Accessibility",
     "Win32_UI_HiDpi",

@@ -31,6 +31,15 @@ understanding what the window is doing on your behalf.
 
 **Tray > Sprite > Add a sprite...**
 
+Two things in its menu bar before you start:
+
+* **Sheet > Copy AI prompt to clipboard** puts the prompt from section B2 on
+  the clipboard, ready to paste into an image generator. It is the same text
+  printed in this guide — one copy, so they cannot disagree.
+* **Help > What the controls do** explains every box in terms of the *values*:
+  what a number does to the result, what happens when it is too high or too
+  low, and what "blank" means. Open it beside the window and leave it there.
+
 1. **Drop your PNG on the window**, or click Browse.
 2. **It fixes the sheet for you.** Straight out of an image generator, a sheet
    has its poses placed by eye, wide margins, often a little ground plate under
