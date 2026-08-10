@@ -1080,6 +1080,21 @@ pub fn load_sheet(dir: &Path) -> Result<SpriteSet, String> {
 
 /// Decode a PNG to premultiplied BGRA.
 fn decode_png(path: &Path) -> Result<(Vec<u32>, u32, u32), String> {
+    decode(path, true)
+}
+
+/// Same, but leaving alpha straight.
+///
+/// The renderer wants premultiplied pixels; the sprite editor wants to
+/// composite them over a checkerboard to show transparency, and premultiplied
+/// source makes that a different (and easy to get subtly wrong) blend. One
+/// decoder, one flag, rather than two copies of the PNG plumbing.
+pub(crate) fn decode_png_straight(path: &Path) -> Result<(Vec<u32>, u32, u32), String> {
+    decode(path, false)
+}
+
+fn decode(path: &Path, premul: bool) -> Result<(Vec<u32>, u32, u32), String> {
+    let conv = |c: u32| if premul { premultiply(c) } else { c };
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
@@ -1096,7 +1111,7 @@ fn decode_png(path: &Path) -> Result<(Vec<u32>, u32, u32), String> {
     let px: Vec<u32> = match info.color_type {
         png::ColorType::Rgba => buf[..info.buffer_size()]
             .chunks_exact(4)
-            .map(|p| premultiply(argb(p[3], p[0], p[1], p[2])))
+            .map(|p| conv(argb(p[3], p[0], p[1], p[2])))
             .collect(),
         png::ColorType::Rgb => buf[..info.buffer_size()]
             .chunks_exact(3)
@@ -1104,7 +1119,7 @@ fn decode_png(path: &Path) -> Result<(Vec<u32>, u32, u32), String> {
             .collect(),
         png::ColorType::GrayscaleAlpha => buf[..info.buffer_size()]
             .chunks_exact(2)
-            .map(|p| premultiply(argb(p[1], p[0], p[0], p[0])))
+            .map(|p| conv(argb(p[1], p[0], p[0], p[0])))
             .collect(),
         png::ColorType::Grayscale => buf[..info.buffer_size()]
             .iter()

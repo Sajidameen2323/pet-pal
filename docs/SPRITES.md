@@ -11,7 +11,13 @@ my-creature\
 Put that folder in `%APPDATA%\PetPal\sprites\` and it appears in **Tray >
 Sprite**. That is the whole system. Everything below is detail.
 
-There are three ways to get those two files. Pick one:
+**You do not have to write `sprite.toml` by hand.** **Tray > Sprite > Add a
+sprite...** opens a window that shows your sheet on a grid, lets you click the
+cells that make up each animation, and writes both files for you. If you have a
+sheet already, start there and skip most of this guide.
+
+The rest of this document is for getting a *sheet* in the first place, and for
+understanding what the window is doing on your behalf.
 
 | | Best if | Effort |
 |---|---|---|
@@ -20,6 +26,30 @@ There are three ways to get those two files. Pick one:
 | **C. Draw from scratch** | You can use a pixel editor | High |
 
 ---
+
+# The window: Add a sprite...
+
+**Tray > Sprite > Add a sprite...**
+
+1. **Drop your PNG on the window**, or click Browse.
+2. **Check the cell size.** It guesses, and shows the grid over your sheet so
+   you can see whether the guess landed. If the lines do not sit between the
+   pictures, correct the two numbers and watch the grid move.
+3. **Pick an animation on the right**, then **click the cells** that make it up,
+   in the order they should play. Each cell you click shows its position in the
+   animation rather than its number, so the order is visible as you work.
+   Clicking a picked cell again removes it; dragging across cells adds a run of
+   them. Cells another animation already uses are outlined in blue.
+4. Watch the **preview at the bottom right** — it plays the selected animation
+   at the speed in the "ms per frame" box.
+5. **Name it** and press **Add sprite**. The folder is written and the pet puts
+   it on immediately.
+
+`idle` is the only animation that must have frames; everything else falls back
+to it (and `climb` falls back to `walk`). Rows 0, 1 and 2 are filled in as idle,
+walk and run when you load a sheet, because that is what they nearly always are
+— Clear them if your sheet is different.
+
 
 # A. Repaint a copy
 
@@ -251,7 +281,13 @@ same colour **inside** your creature — white eyes, a pale chest — is kept.
 ## B4. The settings file
 
 `sheetconv` writes a starter `sprite.toml`, but it cannot know which squares you
-meant as "annoyed". **Delete what it wrote and paste exactly this** — it matches
+meant as "annoyed".
+
+**The easy way:** copy the `out` folder into `%APPDATA%\PetPal\sprites\`, then
+use **Tray > Sprite > Add a sprite...**, point it at the PNG, and click the
+cells. It writes the file for you and you never handle a frame number.
+
+**By hand:** delete what `sheetconv` wrote and paste exactly this — it matches
 the map in B1, so there is nothing to work out:
 
 ```toml

@@ -27,6 +27,7 @@ pub const CMD_CHASE: u32 = 100;
 pub const CMD_WINDOWS: u32 = 101;
 pub const CMD_REACT: u32 = 102;
 pub const CMD_JUMP: u32 = 113;
+pub const CMD_ADD_SPRITE: u32 = 114;
 pub const CMD_SLEEP: u32 = 103;
 pub const CMD_WAKE: u32 = 104;
 pub const CMD_COME: u32 = 105;
@@ -187,6 +188,8 @@ pub struct MenuState {
 pub fn keeps_menu_open(cmd: u32) -> bool {
     match cmd {
         CMD_CHASE | CMD_WINDOWS | CMD_JUMP | CMD_REACT | CMD_SLEEP | CMD_WAKE | CMD_RELOAD => true,
+        // Opening the editor should dismiss the menu; it is a window, not a toggle.
+        CMD_ADD_SPRITE => false,
         n if (CMD_SCALE_BASE..CMD_SCALE_BASE + 100).contains(&n) => true,
         n if (CMD_SPRITE_BASE..CMD_ROAM_BASE).contains(&n) => true,
         n if (CMD_ROAM_BASE..CMD_SLEEP_BASE).contains(&n) => true,
@@ -226,6 +229,7 @@ pub fn show_menu(hwnd: HWND, anchor: POINT, st: &MenuState) -> u32 {
             );
         }
         sep(sprite_menu);
+        item(sprite_menu, CMD_ADD_SPRITE, "Add a sprite...");
         item(sprite_menu, CMD_EXPORT_SHEET, "Make a copy to edit...");
         item(sprite_menu, CMD_OPEN_SPRITES, "Open sprites folder...");
         submenu(menu, sprite_menu, "Sprite");

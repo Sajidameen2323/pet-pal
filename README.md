@@ -90,6 +90,13 @@ move like the same creature wearing different clothes: the mouse skitters at
 
 ### Making your own
 
+**Sprite → Add a sprite...** opens a window that takes a PNG sheet, draws the
+frame grid over it, and lets you click the cells that belong to each animation
+— in playback order, with a live preview — then writes `creature.png` and
+`sprite.toml` and switches the pet to it. No frame numbers are typed at any
+point, which is where hand-written manifests usually go wrong: an index into an
+empty cell is not an error, it just makes the creature invisible.
+
 **Sprite → Make a copy to edit...** writes the creature you are currently using
 out as a real sprite sheet — `creature.png` plus a `sprite.toml` — into
 `%APPDATA%\PetPal\sprites\<name>-copy\`, and opens the folder.

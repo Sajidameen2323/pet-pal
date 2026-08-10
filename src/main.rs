@@ -16,6 +16,7 @@
 
 #![windows_subsystem = "windows"]
 
+mod addsprite;
 mod behavior;
 mod config;
 mod monkey;
@@ -76,6 +77,11 @@ const HIT_ALPHA: u8 = 40;
 
 /// Set once the window exists, so the WinEvent callback can post to it.
 static APP_HWND: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
+
+/// The pet's window, for code that needs to post to it from outside `App`.
+pub fn app_hwnd() -> HWND {
+    APP_HWND.load(Ordering::Relaxed)
+}
 
 struct Drag {
     /// Offset from the cursor to the pet's feet position at grab time.
@@ -397,6 +403,10 @@ impl App {
                 open_folder(&Config::sprites_dir());
                 save = false;
             }
+            CMD_ADD_SPRITE => {
+                addsprite::open();
+                save = false;
+            }
             CMD_RELOAD => {
                 self.reload();
                 save = false;
@@ -459,6 +469,23 @@ impl App {
     /// Rebuild the sprite set from the current config and refresh everything
     /// that depends on it: the canvas size, the pet's body width, and the tray
     /// icon. Returns a load error if the configured sheet could not be used.
+    /// Switch to a sheet the editor has just written.
+    ///
+    /// Adopting it immediately is the point of the window: having assigned
+    /// every frame by hand you want to see the creature, not go hunting for it
+    /// in a menu. The config is saved so it survives a restart.
+    fn adopt_sprite(&mut self, name: &str) {
+        self.cfg.sprite = name.to_string();
+        let err = self.apply_sprites();
+        let _ = self.cfg.save();
+        match err {
+            Some(e) => self.tray.notify("PetPal", &e),
+            None => self
+                .tray
+                .notify("PetPal", &format!("Added \"{name}\" — now wearing it.")),
+        }
+    }
+
     fn apply_sprites(&mut self) -> Option<String> {
         let (set, source, err) = load_sprites(&self.cfg);
         self.set = set;
@@ -727,6 +754,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             });
             return 0;
         }
+        addsprite::WM_SPRITE_ADDED => {
+            if let Some(name) = addsprite::take_added() {
+                with_app(hwnd, |app| app.adopt_sprite(&name));
+            }
+            return 0;
+        }
         WM_APP_NEWWIN => {
             with_app(hwnd, |app| app.on_new_window(lparam as HWND));
             return 0;
@@ -876,6 +909,11 @@ fn run_loop(app: &RefCell<App>) {
             while PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) != 0 {
                 if msg.message == WM_QUIT {
                     return;
+                }
+                // The sprite editor is modeless and shares this loop, so Tab
+                // and Enter only work if we route them through it first.
+                if addsprite::is_dialog_message(&mut msg) {
+                    continue;
                 }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
