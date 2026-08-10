@@ -100,6 +100,12 @@ const CLIMB_TIMEOUT_MS: u32 = 20_000;
 /// against something it cannot walk past would otherwise re-aim at the same
 /// edge forever, never rolling for anything else to do.
 const CLIMB_APPROACH_TIMEOUT_MS: u32 = 20_000;
+/// How often the creature asks itself whether to leave the surface it is on.
+///
+/// On its own clock rather than folded into the next wandering decision: a
+/// walk with a destination can run for ten seconds, and gating the question on
+/// the end of one made climbing take three times longer.
+const LEAVE_CHECK_MS: u32 = 1_200;
 /// Minimum gap between jump attempts. Without it a pet that keeps missing the
 /// same ledge retries every tick and looks frantic.
 const JUMP_COOLDOWN_MS: u32 = 1_100;
@@ -161,6 +167,8 @@ pub struct Pet {
     /// the small upward pop lands it straight back where it started. Only
     /// ledges at or below this y count as ground until it touches down.
     land_below: Option<i32>,
+    /// Time since the last "should I move on?" check.
+    leave_acc: u32,
     /// Sticky flag for the CPU hysteresis band.
     was_annoyed: bool,
     /// Set by "Go to sleep" in the tray menu. Keeps the pet asleep regardless
@@ -193,6 +201,7 @@ impl Pet {
             climb_goal_ms: 0,
             settled_ms: 0,
             land_below: None,
+            leave_acc: 0,
             was_annoyed: false,
             forced_sleep: false,
         }
@@ -329,6 +338,7 @@ impl Pet {
         }
         if self.grounded {
             self.settled_ms = self.settled_ms.saturating_add(dt);
+            self.leave_acc = self.leave_acc.saturating_add(dt);
         }
 
         if self.state == State::Drag {
@@ -742,9 +752,39 @@ impl Pet {
             return;
         }
 
+        // Asked on its own cadence, so a long stroll does not postpone it.
+        if self.consider_leaving(ctx) {
+            return;
+        }
+
         if self.state_ms >= self.hold_ms {
             self.wander(ctx);
         }
+    }
+
+    /// Roll for hopping or climbing off the current surface.
+    ///
+    /// Deliberately allowed to interrupt a walk in progress: arriving somewhere
+    /// new is more interesting than finishing a stroll, and the settle gate
+    /// already stops it happening the moment the creature lands.
+    fn consider_leaving(&mut self, ctx: &mut Ctx) -> bool {
+        if !self.grounded || !ctx.cfg.jump_between_windows || self.climb_goal.is_some() {
+            return false;
+        }
+        if self.leave_acc < LEAVE_CHECK_MS {
+            return false;
+        }
+        self.leave_acc = 0;
+        let roam = ctx.cfg.roam.min(100) as u32;
+        let settle_needed = (SETTLE_BASE_MS * (140 - roam) / 100).max(SETTLE_MIN_MS);
+        if self.settled_ms < settle_needed {
+            return false;
+        }
+        let hop_chance = (4 + roam * 24 / 100).min(28);
+        if !ctx.rng.chance(hop_chance) {
+            return false;
+        }
+        self.try_hop(ctx) || self.seek_climb(ctx)
     }
 
     fn chase(&mut self, ctx: &mut Ctx) {
@@ -848,20 +888,17 @@ impl Pet {
 
         let roam = ctx.cfg.roam.min(100) as u32;
 
-        // Moving between surfaces is what makes the pet feel like it lives in
-        // the desktop rather than on it, so try that first. Even a very calm
-        // pet does it occasionally.
-        let hop_chance = (4 + roam * 24 / 100).min(28);
+        // Hopping and climbing are handled by `consider_leaving`, on its own
+        // clock. What is left here is stepping off an edge, which shares the
+        // same settle gate: otherwise the creature lands, pauses, and walks
+        // straight back off, which is the yo-yo that gate exists to stop.
+        //
         // Look around the new surface before planning the next move. A
         // restless creature gets bored of it sooner.
         let settle_needed =
             (SETTLE_BASE_MS * (140 - roam) / 100).max(SETTLE_MIN_MS);
         let may_leave = ctx.cfg.jump_between_windows && self.settled_ms >= settle_needed;
 
-        if may_leave && ctx.rng.chance(hop_chance) && (self.try_hop(ctx) || self.seek_climb(ctx))
-        {
-            return;
-        }
 
         // Stepping off an edge is a way of leaving too, and has to wait out the
         // same settle — otherwise the creature lands, idles for a moment and
@@ -910,11 +947,16 @@ impl Pet {
 
         match rng.below(100) {
             0..=63 => {
-                if rng.chance(45) {
-                    self.facing = -self.facing;
+                // Walk *somewhere*, rather than for a while in a coin-flipped
+                // direction. See `stroll_to`.
+                if !self.stroll_to(ctx) {
+                    let rng = &mut *ctx.rng;
+                    if rng.chance(45) {
+                        self.facing = -self.facing;
+                    }
+                    let d = hold(rng, 1200, 3600, move_scale);
+                    self.enter(State::Walk, d);
                 }
-                let d = hold(rng, 1200, 3600, move_scale);
-                self.enter(State::Walk, d);
             }
             64..=81 => {
                 // Deliberately walk off the edge and drop to whatever is below
@@ -932,6 +974,59 @@ impl Pet {
                 self.enter(State::Run, d);
             }
         }
+    }
+
+    /// Walk to a chosen spot on the current surface.
+    ///
+    /// Replaces "walk for 1-3 seconds in a direction decided by a coin flip",
+    /// which is a random walk: steps of 55-166px that reverse half the time
+    /// return the creature to where it started. Measured on a stock 1920px
+    /// taskbar, a quarter of all 30-second stretches covered under 250px and
+    /// the worst covered 91px — which reads exactly as pacing on the spot.
+    ///
+    /// A destination fixes it without any new state, because a walk already
+    /// ends when its hold expires: pick a target, set the hold to the time the
+    /// journey takes, and the creature arrives. Direction persistence comes out
+    /// of committing to somewhere rather than being bolted on.
+    fn stroll_to(&mut self, ctx: &mut Ctx) -> bool {
+        let Some(l) = self.ledge else { return false };
+        let (lo, hi) = ((l.x0 + self.margin) as f32, (l.x1 - self.margin) as f32);
+        let span = hi - lo;
+        if span < 48.0 {
+            return false;
+        }
+
+        // Worth the trip: a decent share of the surface, floored so a short
+        // ledge still gets crossed and capped so a wide one is not always a
+        // full-length march — that is what the sprint is for.
+        let min_d = (span * 0.18).clamp(60.0, 220.0);
+        let max_d = (span * 0.60).max(min_d + 1.0);
+
+        let (room_left, room_right) = (self.x - lo, hi - self.x);
+        let go_left = match (room_left >= min_d, room_right >= min_d) {
+            (true, true) => ctx.rng.chance(50),
+            (true, false) => true,
+            (false, true) => false,
+            // Boxed in at both ends: head for the roomier side and take what
+            // is there, so it still moves rather than jittering in place.
+            (false, false) => room_left > room_right,
+        };
+        let room = if go_left { room_left } else { room_right };
+        if room < 24.0 {
+            return false;
+        }
+
+        let d = if room <= min_d {
+            room
+        } else {
+            let reach = max_d.min(room) - min_d;
+            min_d + reach * (ctx.rng.below(1000) as f32 / 1000.0)
+        };
+        self.facing = if go_left { -1 } else { 1 };
+        let speed = (ctx.cfg.speed * self.speed_scale).max(1.0);
+        let ms = (d / speed * 1000.0) as u32;
+        self.enter(State::Walk, ms.clamp(400, 20_000));
+        true
     }
 
     /// Sprint from one end of the current ledge to the other.
@@ -1726,6 +1821,132 @@ mod tests {
             (pet.x - settled).abs() < 1.0,
             "drifted {} px after arriving",
             (pet.x - settled).abs()
+        );
+    }
+
+    /// A walk must get somewhere.
+    ///
+    /// It used to be "go this way for 1-3 seconds", with the direction
+    /// re-flipped by a coin toss each time — a random walk, which returns to
+    /// where it started. Measured on a stock 1920px taskbar: **41% of all
+    /// movements travelled under 100px** and the median was 125px, which is
+    /// the shuffling-on-the-spot people notice. With a destination the median
+    /// is 652px and 15% are short, those being the ones that run out of ledge.
+    ///
+    /// Measured per movement rather than over a time window. A window metric
+    /// cannot tell pacing from resting, and a resting creature is the roam
+    /// dial working, not a bug — an earlier version of this test measured
+    /// windows and passed happily with the fix removed.
+    #[test]
+    fn a_walk_covers_real_ground() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let mut cfg = Config::default(); // stock settings, as shipped
+        cfg.chase_cursor = false;
+        cfg.sleep_after_idle_secs = 86_400;
+        cfg.cpu_annoy_percent = 100;
+
+        // One 1920-wide taskbar and nothing else, which is most desktops.
+        let w = World::for_test(
+            vec![Monitor {
+                rect: RECT { left: 0, top: 0, right: 1920, bottom: 1080 },
+                work: RECT { left: 0, top: 0, right: 1920, bottom: 1035 },
+            }],
+            vec![Ledge { x0: 0, x1: 1920, y: 1035 }],
+        );
+
+        let mut moves: Vec<f32> = Vec::new();
+        for seed in [1u64, 2, 3, 17, 44, 61, 90] {
+            let (mut pet, mut rng) = settle_on_seeded(&set, &cfg, &w, 960.0, 1000.0, seed);
+            let mut prev = pet.state;
+            let mut from = pet.x;
+            for _ in 0..12_000 {
+                let mut ctx = Ctx {
+                    world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
+                    idle_ms: 0, cfg: &cfg, rng: &mut rng,
+                };
+                pet.update(25, &mut ctx, &set);
+                let moving = matches!(pet.state, State::Walk | State::Run);
+                let was = matches!(prev, State::Walk | State::Run);
+                if moving && !was {
+                    from = pet.x;
+                } else if was && (!moving || pet.state != prev) {
+                    moves.push((pet.x - from).abs());
+                    from = pet.x;
+                }
+                prev = pet.state;
+            }
+        }
+
+        assert!(moves.len() > 50, "only {} movements to judge", moves.len());
+        moves.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = moves[moves.len() / 2];
+        let short = moves.iter().filter(|&&d| d < 100.0).count() as f32 / moves.len() as f32;
+
+        assert!(
+            median >= 300.0,
+            "median movement is only {median:.0}px on a 1920px taskbar"
+        );
+        assert!(
+            short < 0.25,
+            "{:.0}% of movements travel under 100px — the creature is pacing",
+            short * 100.0
+        );
+    }
+
+    /// How far does one walk actually get? `cargo test -- --ignored --nocapture pacing_metric`.
+    #[test]
+    #[ignore]
+    fn pacing_metric() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let mut cfg = Config::default();
+        cfg.chase_cursor = false;
+        cfg.sleep_after_idle_secs = 86_400;
+        cfg.cpu_annoy_percent = 100;
+        let w = World::for_test(
+            vec![Monitor {
+                rect: RECT { left: 0, top: 0, right: 1920, bottom: 1080 },
+                work: RECT { left: 0, top: 0, right: 1920, bottom: 1035 },
+            }],
+            vec![Ledge { x0: 0, x1: 1920, y: 1035 }],
+        );
+        let mut all: Vec<f32> = Vec::new();
+        let mut sprints = 0;
+        for seed in [1u64, 2, 3, 17, 44, 61, 90] {
+            let (mut pet, mut rng) = settle_on_seeded(&set, &cfg, &w, 960.0, 1000.0, seed);
+            let mut prev = pet.state;
+            let mut seg_start = pet.x;
+            for _ in 0..12_000 {
+                let mut ctx = Ctx {
+                    world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
+                    idle_ms: 0, cfg: &cfg, rng: &mut rng,
+                };
+                pet.update(25, &mut ctx, &set);
+                let now = pet.state;
+                let was_move = matches!(prev, State::Walk | State::Run);
+                let is_move = matches!(now, State::Walk | State::Run);
+                if !was_move && is_move {
+                    seg_start = pet.x;
+                } else if was_move && !is_move {
+                    all.push((pet.x - seg_start).abs());
+                } else if was_move && is_move && now != prev {
+                    all.push((pet.x - seg_start).abs());
+                    seg_start = pet.x;
+                }
+                if now == State::Run && prev != State::Run {
+                    sprints += 1;
+                }
+                prev = now;
+            }
+        }
+        all.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let pct = |q: f32| all[((all.len() as f32 - 1.0) * q) as usize];
+        let short = all.iter().filter(|&&d| d < 100.0).count() as f32 / all.len() as f32 * 100.0;
+        println!(
+            "{} moves over 35 minutes: median {:.0}px, 10th {:.0}px, 90th {:.0}px;              {short:.0}% travel under 100px; {sprints} runs started",
+            all.len(),
+            pct(0.5),
+            pct(0.1),
+            pct(0.9),
         );
     }
 }
