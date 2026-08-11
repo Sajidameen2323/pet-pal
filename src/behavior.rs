@@ -105,6 +105,10 @@ const CLIMB_MIN_GAIN: i32 = 90;
 /// Give up on a climb that is taking absurdly long — the window moved, or the
 /// geometry changed under us.
 const CLIMB_TIMEOUT_MS: u32 = 20_000;
+/// After abandoning an approach, leave the whole idea alone for a while. The
+/// edge that could not be reached is usually still the nearest one, so without
+/// this the next decision picks it straight back up.
+const LEAVE_COOLDOWN_MS: u32 = 25_000;
 /// And give up on *reaching* an edge that never gets closer. A creature pinned
 /// against something it cannot walk past would otherwise re-aim at the same
 /// edge forever, never rolling for anything else to do.
@@ -178,6 +182,8 @@ pub struct Pet {
     land_below: Option<i32>,
     /// Time since the last "should I move on?" check.
     leave_acc: u32,
+    /// Counts down after an abandoned approach; blocks further attempts.
+    leave_cooldown: u32,
     /// Sticky flag for the CPU hysteresis band.
     was_annoyed: bool,
     /// Set by "Go to sleep" in the tray menu. Keeps the pet asleep regardless
@@ -211,6 +217,7 @@ impl Pet {
             settled_ms: 0,
             land_below: None,
             leave_acc: 0,
+            leave_cooldown: 0,
             was_annoyed: false,
             forced_sleep: false,
         }
@@ -349,6 +356,7 @@ impl Pet {
             self.settled_ms = self.settled_ms.saturating_add(dt);
             self.leave_acc = self.leave_acc.saturating_add(dt);
         }
+        self.leave_cooldown = self.leave_cooldown.saturating_sub(dt);
 
         if self.state == State::Drag {
             self.animate(dt, set);
@@ -476,6 +484,21 @@ impl Pet {
             }
             self.x = self.x.clamp(lo, hi);
             self.facing = -self.facing;
+            // Re-decide here, rather than spending the rest of this walk
+            // drifting back the way we came.
+            //
+            // A purposeful walk that reaches the end of its surface has
+            // finished, and the creature is now standing at the closest point
+            // it can occupy to whatever it was heading for — which is exactly
+            // where a climb gets taken hold of. Without this it never *ends* a
+            // walk at the edge: it passes through the point it needed, is
+            // turned around, and the next decision is taken a body's width
+            // further away, so it aims at the same target again. Forever.
+            //
+            // Measured on a 2560x1440 screen with a window 40px in from the
+            // edge: the creature oscillated between x=54 and x=68 — a 14px
+            // shuffle — 353 times in three minutes.
+            self.hold_ms = 0;
         }
     }
 
@@ -706,6 +729,10 @@ impl Pet {
             || !(self.ledge.is_some_and(|l| l.holds(goal.x))
                 || (goal.x as f32 - self.x).abs() <= CLIMB_GRAB_DX as f32);
         if stale {
+            // Whatever made it stale, do not immediately choose it again.
+            if self.climb_goal_ms > CLIMB_APPROACH_TIMEOUT_MS {
+                self.leave_cooldown = LEAVE_COOLDOWN_MS;
+            }
             self.climb_goal = None;
             return false;
         }
@@ -798,7 +825,11 @@ impl Pet {
     /// new is more interesting than finishing a stroll, and the settle gate
     /// already stops it happening the moment the creature lands.
     fn consider_leaving(&mut self, ctx: &mut Ctx) -> bool {
-        if !self.grounded || !ctx.cfg.jump_between_windows || self.climb_goal.is_some() {
+        if !self.grounded
+            || !ctx.cfg.jump_between_windows
+            || self.climb_goal.is_some()
+            || self.leave_cooldown > 0
+        {
             return false;
         }
         if self.leave_acc < LEAVE_CHECK_MS {
@@ -2141,5 +2172,98 @@ mod tests {
                 "seed {seed}: spent {pinned_s:.0}s of 180 stuck against a screen edge"
             );
         }
+    }
+
+    /// The creature must not get pinned at a screen edge on *any* setup.
+    ///
+    /// Every previous version of this bug was a different arrangement of the
+    /// same trap: something the creature aims at but cannot reach, re-chosen on
+    /// every decision, with `confine_to_ledge` turning it round in between. Two
+    /// were found only because the user said which setup they were on. So this
+    /// stops enumerating setups and generates them: screen size, taskbar
+    /// height, monitor offset (including negative, for a screen to the left of
+    /// the primary), how far a big window is inset from the edges, and how big
+    /// the sprite is — a 4x monkey on a 4K screen keeps its centre 54px from a
+    /// ledge end, which is what made 14px-off-the-edge unreachable.
+    ///
+    /// The inset sweep matters most: at 0 the window edges land exactly on the
+    /// screen edges, and around a body's half width they land just inside it,
+    /// which is where the 2560x1440 report came from.
+    #[test]
+    fn no_setup_pins_the_creature_to_an_edge() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let mut cfg = Config::default();
+        cfg.chase_cursor = false;
+        cfg.sleep_after_idle_secs = 86_400;
+        cfg.cpu_annoy_percent = 100;
+
+        let mut worst = (0u32, String::new());
+        for &(sw, sh) in &[(1366i32, 768i32), (1920, 1080), (2560, 1440), (3840, 2160)] {
+            for &origin in &[0i32, -2560, 1920] {
+                for &taskbar in &[40i32, 48, 72] {
+                    for &inset in &[0i32, 8, 24, 40, 60, 120] {
+                        for &body in &[64i32, 96, 144] {
+                            let mon = RECT {
+                                left: origin,
+                                top: 0,
+                                right: origin + sw,
+                                bottom: sh,
+                            };
+                            let work = RECT { bottom: sh - taskbar, ..mon };
+                            let floor = work.bottom;
+                            let (wl, wr) = (origin + inset, origin + sw - inset);
+                            let mut w = World::for_test(
+                                vec![Monitor { rect: mon, work }],
+                                vec![
+                                    Ledge { x0: origin, x1: origin + sw, y: floor },
+                                    Ledge { x0: wl, x1: wr, y: inset.min(60) },
+                                ],
+                            );
+                            w.walls = vec![
+                                Wall { x: wl, y_top: inset.min(60), y_bottom: floor, inward: 1 },
+                                Wall { x: wr, y_top: inset.min(60), y_bottom: floor, inward: -1 },
+                            ];
+
+                            let (mut pet, mut rng) = settle_on_seeded(
+                                &set, &cfg, &w,
+                                (origin + sw / 2) as f32, (floor - 40) as f32, 3,
+                            );
+                            pet.set_body_width(body, 0.375);
+
+                            let mut turns = 0u32;
+                            let mut facing = pet.facing;
+                            for _ in 0..4_800 {
+                                // two minutes
+                                let mut ctx = Ctx {
+                                    world: &w, cursor: (1_000_000, 1_000_000), cpu_load: 0.0,
+                                    idle_ms: 0, cfg: &cfg, rng: &mut rng,
+                                };
+                                pet.update(25, &mut ctx, &set);
+                                if pet.facing != facing {
+                                    turns += 1;
+                                    facing = pet.facing;
+                                }
+                            }
+                            if turns > worst.0 {
+                                worst = (
+                                    turns,
+                                    format!(
+                                        "{sw}x{sh} at x={origin}, taskbar {taskbar}, window inset {inset}, body {body}"
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Two minutes of ordinary roaming turns the creature around a handful
+        // of times. Anything approaching a turn a second is the trap.
+        assert!(
+            worst.0 <= 40,
+            "turned around {} times in two minutes on {}",
+            worst.0,
+            worst.1
+        );
     }
 }
