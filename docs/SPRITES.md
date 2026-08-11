@@ -11,9 +11,10 @@ my-creature\
 Put that folder in `%APPDATA%\PetPal\sprites\` and it appears in **Tray >
 Sprite**. That is the whole system. Everything below is detail.
 
-**You do not have to write `sprite.toml` by hand.** **Tray > Sprite > Add a
-sprite...** opens a window that shows your sheet on a grid, lets you click the
-cells that make up each animation, and writes both files for you. If you have a
+**You do not have to write `sprite.toml` by hand.** **Tray > Sprite > Add or
+edit sprites...** opens a window that shows your sheet on a grid, lets you click
+the cells that make up each animation, and writes both files for you. It also
+opens the creatures you already have, for changing or deleting. If you have a
 sheet already, start there and skip most of this guide.
 
 The rest of this document is for getting a *sheet* in the first place, and for
@@ -27,9 +28,23 @@ understanding what the window is doing on your behalf.
 
 ---
 
-# The window: Add a sprite...
+# The window: Add or edit sprites...
 
-**Tray > Sprite > Add a sprite...**
+**Tray > Sprite > Add or edit sprites...**
+
+It handles all three jobs: making a creature, changing one you already have,
+and getting rid of one.
+
+**To edit an installed creature**, pick it from the **Installed** dropdown at
+the top right. Its artwork, grid and frame assignments all load, the name fills
+in, and the button changes to **Save changes** — saving over the sprite you
+opened does not ask for confirmation, because that is the whole point. Change
+the name before saving and you get a second creature instead, leaving the
+original alone.
+
+**To delete one**, pick it in the same dropdown and press **Delete**. It names
+the folder and warns that it does not go to the Recycle Bin, because it does
+not. If the pet happens to be wearing what you deleted, it goes back to Pal.
 
 Two things in its menu bar before you start:
 

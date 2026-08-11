@@ -229,7 +229,7 @@ pub fn show_menu(hwnd: HWND, anchor: POINT, st: &MenuState) -> u32 {
             );
         }
         sep(sprite_menu);
-        item(sprite_menu, CMD_ADD_SPRITE, "Add a sprite...");
+        item(sprite_menu, CMD_ADD_SPRITE, "Add or edit sprites...");
         item(sprite_menu, CMD_EXPORT_SHEET, "Make a copy to edit...");
         item(sprite_menu, CMD_OPEN_SPRITES, "Open sprites folder...");
         submenu(menu, sprite_menu, "Sprite");

@@ -994,6 +994,59 @@ fn default_frame_ms() -> u32 {
     120
 }
 
+/// A manifest, parsed but not yet turned into pixels.
+///
+/// The editor needs the frame *numbers* an existing sprite uses so it can show
+/// them back to the author; `load_sheet` throws them away in favour of the
+/// artwork. Reading the file twice with two parsers is how the two would
+/// eventually disagree about what a manifest means, so both go through here.
+pub struct SheetSpec {
+    pub image: String,
+    pub frame_width: u32,
+    pub frame_height: u32,
+    /// In `Anim::ALL` order. `None` means the manifest did not mention that
+    /// animation — which the editor shows as unassigned, rather than as the
+    /// copy of `idle` the loader would substitute.
+    pub anims: Vec<Option<(Vec<u16>, u32)>>,
+}
+
+/// Parse `<dir>/sprite.toml`.
+///
+/// `cols` expands the `row`/`count` shorthand into real frame numbers, so the
+/// caller has to know how wide the sheet is; pass 0 if it does not, and rows
+/// are left unexpanded.
+pub fn read_sheet_spec(dir: &Path, cols: u32) -> Result<SheetSpec, String> {
+    let path = dir.join("sprite.toml");
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let m: SheetManifest = toml::from_str(&text).map_err(|e| format!("sprite.toml: {e}"))?;
+    if m.frame_width == 0 || m.frame_height == 0 {
+        return Err("frame_width and frame_height must be non-zero".into());
+    }
+    let anims = Anim::ALL
+        .iter()
+        .map(|a| {
+            m.anims.get(a.key()).map(|spec| {
+                let idx = if !spec.frames.is_empty() {
+                    spec.frames.clone()
+                } else if let Some(row) = spec.row {
+                    let n = spec.count.unwrap_or(cols).min(cols);
+                    (0..n).map(|i| (row * cols + i) as u16).collect()
+                } else {
+                    Vec::new()
+                };
+                (idx, spec.frame_ms.max(16))
+            })
+        })
+        .collect();
+    Ok(SheetSpec {
+        image: m.image,
+        frame_width: m.frame_width,
+        frame_height: m.frame_height,
+        anims,
+    })
+}
+
 /// Load `<dir>/sprite.toml` and its referenced PNG.
 ///
 /// Any animation the manifest omits falls back to `idle`, so a sheet with a

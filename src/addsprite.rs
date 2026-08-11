@@ -44,17 +44,25 @@ use crate::win::{from_wide, wide};
 /// across a `PostMessage` would have to outlive this window.
 pub const WM_SPRITE_ADDED: u32 = WM_APP + 3;
 
+/// What the editor did, for the pet to act on.
+pub enum Change {
+    /// Written and ready to wear.
+    Added(String),
+    /// Gone from disk. The pet has to stop wearing it if it was.
+    Removed(String),
+}
+
 thread_local! {
-    /// Name of the sprite just written. Same thread as the message loop, so a
-    /// `thread_local` is enough — no lock, no `unsafe`.
-    static ADDED: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// What just happened to the sprites folder. Same thread as the message
+    /// loop, so a `thread_local` is enough — no lock, no `unsafe`.
+    static CHANGE: RefCell<Option<Change>> = const { RefCell::new(None) };
     /// The open editor, if any. Keeps the second click on the menu item from
     /// stacking windows.
     static OPEN: RefCell<HWND> = const { RefCell::new(null_mut()) };
 }
 
-pub fn take_added() -> Option<String> {
-    ADDED.with(|a| a.borrow_mut().take())
+pub fn take_change() -> Option<Change> {
+    CHANGE.with(|a| a.borrow_mut().take())
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +101,8 @@ const ID_TRIM: isize = 1014;
 const ID_BG: isize = 1015;
 const ID_COLS: isize = 1016;
 const ID_ROWS: isize = 1017;
+const ID_INSTALLED: isize = 1018;
+const ID_DELETE: isize = 1019;
 
 // Menu bar.
 const ID_MENU_OPEN: isize = 2001;
@@ -114,6 +124,9 @@ const ES_NUMBER_: u32 = 0x2000;
 const BS_PUSH: u32 = 0x0000;
 const BS_DEFPUSH: u32 = 0x0001;
 const LBS_NOTIFY_: u32 = 0x0001;
+/// A dropdown with no editable field, so the only values are the ones offered.
+const CBS_DROPDOWNLIST_: u32 = 0x0003;
+const CBN_SELCHANGE_: u32 = 1;
 const ES_MULTILINE_: u32 = 0x0004;
 const ES_READONLY_: u32 = 0x0800;
 
@@ -151,6 +164,13 @@ struct Editor {
     bg_edit: HWND,
     cols_edit: HWND,
     rows_edit: HWND,
+    installed: HWND,
+    add_button: HWND,
+
+    /// The installed sprite currently open for editing, if any. Saving over
+    /// the folder it came from is then an edit rather than a replacement, and
+    /// does not need confirming.
+    editing: Option<String>,
 
     /// The PNG exactly as loaded. Kept so re-fitting with different settings
     /// always starts from the original rather than compounding resamples.
@@ -238,7 +258,7 @@ pub fn open() {
         };
         RegisterClassExW(&wc);
 
-        let title = wide("Add a sprite");
+        let title = wide("Add or edit a sprite");
         // Controls are placed at absolute coordinates while the sheet and the
         // playback box are laid out against the client rect. Those only agree
         // if the client area is exactly WIN_W x WIN_H, so ask for the outer
@@ -506,6 +526,22 @@ unsafe fn build(hwnd: HWND) -> Editor {
         );
         mk("BUTTON", "Browse...", BS_PUSH, PAD + 604, PAD, 100, 27, ID_BROWSE);
 
+        // Editing an installed creature is the same job as making one, so it
+        // is the same window: pick it here and everything below fills in.
+        let px_panel = WIN_W - PANEL_W - PAD;
+        mk("STATIC", "Installed:", SS_LEFT, px_panel, PAD + 4, 62, 20, 0);
+        let installed = mk(
+            "COMBOBOX",
+            "",
+            CBS_DROPDOWNLIST_ | WS_VSCROLL,
+            px_panel + 64,
+            PAD,
+            PANEL_W - 160,
+            240,
+            ID_INSTALLED,
+        );
+        mk("BUTTON", "Delete", BS_PUSH, WIN_W - PAD - 84, PAD, 84, 27, ID_DELETE);
+
         // -- row 2: tidying a generated sheet -----------------------------
         let y2 = PAD + 33;
         mk("STATIC", "2. Fix", SS_LEFT, PAD, y2 + 4, 60, 20, 0);
@@ -594,7 +630,8 @@ unsafe fn build(hwnd: HWND) -> Editor {
 
         // -- footer --------------------------------------------------------
         let foot_y = WIN_H - 40;
-        mk("BUTTON", "Add sprite", BS_DEFPUSH, WIN_W - 220, foot_y, 100, 30, ID_ADD);
+        let add_button =
+            mk("BUTTON", "Add sprite", BS_DEFPUSH, WIN_W - 228, foot_y, 108, 30, ID_ADD);
         mk("BUTTON", "Cancel", BS_PUSH, WIN_W - 112, foot_y, 92, 30, ID_CANCEL);
 
         let mut ed = Editor {
@@ -611,6 +648,9 @@ unsafe fn build(hwnd: HWND) -> Editor {
             bg_edit,
             cols_edit,
             rows_edit,
+            installed,
+            add_button,
+            editing: None,
             src: None,
             px: Vec::new(),
             iw: 0,
@@ -650,6 +690,7 @@ unsafe fn build(hwnd: HWND) -> Editor {
             };
         }
         sync_list(&ed);
+        refresh_installed(&ed);
         SendMessageW(list, LB_SETCURSEL, 0, 0);
         set_text(ms_edit, &ed.ms[0].to_string());
         ed
@@ -730,6 +771,13 @@ fn on_command(ed: &mut Editor, id: isize, code: u32) {
             restart_playback(ed);
             redraw(ed);
         }
+        ID_INSTALLED if code == CBN_SELCHANGE_ => {
+            if let Some(name) = selected_installed(ed) {
+                open_installed(ed, &name);
+            }
+        }
+        ID_DELETE => delete_installed(ed),
+        ID_NAME if code == EN_CHANGE => update_add_button(ed),
         ID_MENU_OPEN => browse(ed),
         ID_MENU_PROMPT => copy_prompt(ed),
         ID_MENU_HELP => show_help(ed.hwnd),
@@ -761,6 +809,162 @@ fn browse(ed: &mut Editor) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Installed sprites: open, save over, delete
+// ---------------------------------------------------------------------------
+
+const CB_ADDSTRING: u32 = 0x0143;
+const CB_RESETCONTENT: u32 = 0x014B;
+const CB_GETCURSEL: u32 = 0x0147;
+const CB_SETCURSEL: u32 = 0x014E;
+
+/// Reload the dropdown from disk. Cheap, and always right — the folder can
+/// change under us while the window is open.
+fn refresh_installed(ed: &Editor) {
+    unsafe {
+        SendMessageW(ed.installed, CB_RESETCONTENT, 0, 0);
+        for name in Config::installed_sheets() {
+            let s = wide(&name);
+            SendMessageW(ed.installed, CB_ADDSTRING, 0, s.as_ptr() as LPARAM);
+        }
+        if let Some(open) = &ed.editing {
+            if let Some(i) = Config::installed_sheets().iter().position(|n| n == open) {
+                SendMessageW(ed.installed, CB_SETCURSEL, i as WPARAM, 0);
+            }
+        }
+    }
+}
+
+fn selected_installed(ed: &Editor) -> Option<String> {
+    let i = unsafe { SendMessageW(ed.installed, CB_GETCURSEL, 0, 0) };
+    if i < 0 {
+        return None;
+    }
+    Config::installed_sheets().into_iter().nth(i as usize)
+}
+
+/// Load an installed sprite for editing: its artwork, its grid, and the frame
+/// numbers it assigns to each animation.
+fn open_installed(ed: &mut Editor, name: &str) {
+    let dir = Config::sprites_dir().join(name);
+    let spec_probe = crate::sprites::read_sheet_spec(&dir, 0);
+    let image = match &spec_probe {
+        Ok(s) => s.image.clone(),
+        Err(_) => "creature.png".to_string(),
+    };
+    let img_path = dir.join(&image);
+
+    let (px, w, h) = match crate::sprites::decode_png_straight(&img_path) {
+        Ok(v) => v,
+        Err(e) => return warn(ed.hwnd, &format!("Could not read {name}.\n\n{e}")),
+    };
+
+    // The sheet is already on a grid by definition — it is installed and
+    // working — so it is used exactly as it is, never re-fitted.
+    ed.orig = px.clone();
+    ed.orig_w = w as i32;
+    ed.orig_h = h as i32;
+    ed.px = px;
+    ed.iw = w as i32;
+    ed.ih = h as i32;
+    ed.fitted = false;
+    ed.src = Some(img_path);
+    set_text(ed.path_label, &dir.display().to_string());
+
+    let spec = match crate::sprites::read_sheet_spec(&dir, 0).and_then(|s| {
+        let cols = if s.frame_width > 0 { w / s.frame_width } else { 0 };
+        crate::sprites::read_sheet_spec(&dir, cols)
+    }) {
+        Ok(s) => s,
+        Err(e) => return warn(ed.hwnd, &format!("Could not read {name}'s settings.\n\n{e}")),
+    };
+
+    ed.cell_w = spec.frame_width as i32;
+    ed.cell_h = spec.frame_height as i32;
+    set_text(ed.cw_edit, &ed.cell_w.to_string());
+    set_text(ed.ch_edit, &ed.cell_h.to_string());
+
+    let cells = (ed.cols() * ed.rows()).max(0) as u16;
+    for (i, slot) in spec.anims.iter().enumerate() {
+        match slot {
+            Some((frames, ms)) => {
+                ed.frames[i] = frames.iter().copied().filter(|&c| c < cells).collect();
+                ed.ms[i] = *ms;
+            }
+            None => ed.frames[i].clear(),
+        }
+    }
+
+    set_text(ed.name, name);
+    ed.editing = Some(name.to_string());
+    set_text(ed.ms_edit, &ed.ms[ed.sel].to_string());
+    set_text(
+        ed.hint,
+        &format!("Editing \"{name}\" — {w}x{h}, {}px cells.", spec.frame_width),
+    );
+    sync_list(ed);
+    restart_playback(ed);
+    update_add_button(ed);
+    refresh_installed(ed);
+    redraw(ed);
+}
+
+/// "Add sprite" or "Save changes", depending on whether this would overwrite
+/// the installed sprite it was opened from.
+fn update_add_button(ed: &Editor) {
+    let editing_same = ed
+        .editing
+        .as_deref()
+        .is_some_and(|n| n == sanitise(&ed.name_text()));
+    set_text(
+        ed.add_button,
+        if editing_same { "Save changes" } else { "Add sprite" },
+    );
+}
+
+fn delete_installed(ed: &mut Editor) {
+    let Some(name) = selected_installed(ed) else {
+        return warn(ed.hwnd, "Pick an installed sprite to delete.");
+    };
+    let dir = Config::sprites_dir().join(&name);
+    if !dir.is_dir() {
+        return warn(ed.hwnd, &format!("\"{name}\" is not there any more."));
+    }
+    // Name the folder and say it cannot be undone: this deletes artwork the
+    // author may have spent real time on, and the Recycle Bin is not involved.
+    if !confirm(
+        ed.hwnd,
+        &format!(
+            "Delete the sprite \"{name}\"?\n\n\
+             This permanently removes the folder and everything in it:\n{}\n\n\
+             It does not go to the Recycle Bin. This cannot be undone.",
+            dir.display()
+        ),
+    ) {
+        return;
+    }
+    if let Err(e) = std::fs::remove_dir_all(&dir) {
+        return warn(ed.hwnd, &format!("Could not delete \"{name}\".\n\n{e}"));
+    }
+
+    if ed.editing.as_deref() == Some(name.as_str()) {
+        ed.editing = None;
+        update_add_button(ed);
+    }
+    set_text(ed.hint, &format!("Deleted \"{name}\"."));
+    refresh_installed(ed);
+
+    // The pet may be wearing it.
+    CHANGE.with(|c| *c.borrow_mut() = Some(Change::Removed(name)));
+    unsafe {
+        let pet = crate::app_hwnd();
+        if !pet.is_null() {
+            PostMessageW(pet, WM_SPRITE_ADDED, 0, 0);
+        }
+    }
+    redraw(ed);
+}
+
 /// Read a PNG in, tidy it if it needs tidying, and set up the grid.
 fn load(ed: &mut Editor, path: &Path) {
     match crate::sprites::decode_png_straight(path) {
@@ -769,6 +973,8 @@ fn load(ed: &mut Editor, path: &Path) {
             ed.orig_w = w as i32;
             ed.orig_h = h as i32;
             ed.src = Some(path.to_path_buf());
+            ed.editing = None;
+            update_add_button(ed);
             set_text(ed.path_label, &path.display().to_string());
             if ed.name_text().is_empty() {
                 set_text(ed.name, &default_name(path));
@@ -1378,7 +1584,16 @@ fn add(ed: &mut Editor) {
     }
 
     let dir = Config::sprites_dir().join(&name);
-    if dir.exists() && !confirm(ed.hwnd, &format!("\"{name}\" already exists.\n\nReplace it?")) {
+    // Saving an edit back over the sprite it was opened from is the expected
+    // outcome, not a collision — only ask when it would clobber a *different*
+    // creature.
+    let editing_same = ed.editing.as_deref() == Some(name.as_str());
+    if dir.exists()
+        && !editing_same
+        && !confirm(ed.hwnd, &format!("\"{name}\" already exists.
+
+Replace it?"))
+    {
         return;
     }
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -1389,12 +1604,16 @@ fn add(ed: &mut Editor) {
     // frame numbers just assigned against the fitted one. If it was not, the
     // file is copied untouched rather than re-encoded — bit for bit what the
     // author picked.
+    let dest_png = dir.join("creature.png");
     let wrote = if ed.fitted {
-        write_png(&dir.join("creature.png"), &ed.px, ed.iw as u32, ed.ih as u32)
+        write_png(&dest_png, &ed.px, ed.iw as u32, ed.ih as u32)
+    } else if same_file(&src, &dest_png) {
+        // Editing an installed sprite without touching its artwork: the source
+        // *is* the destination. `fs::copy` onto itself truncates the file,
+        // which would delete the creature being edited.
+        Ok(())
     } else {
-        std::fs::copy(&src, dir.join("creature.png"))
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        std::fs::copy(&src, &dest_png).map(|_| ()).map_err(|e| e.to_string())
     };
     if let Err(e) = wrote {
         return warn(ed.hwnd, &format!("Could not write the image.\n\n{e}"));
@@ -1403,7 +1622,7 @@ fn add(ed: &mut Editor) {
         return warn(ed.hwnd, &format!("Could not write sprite.toml.\n\n{e}"));
     }
 
-    ADDED.with(|a| *a.borrow_mut() = Some(name));
+    CHANGE.with(|c| *c.borrow_mut() = Some(Change::Added(name)));
     unsafe {
         let pet = crate::app_hwnd();
         if !pet.is_null() {
@@ -1417,6 +1636,14 @@ fn add(ed: &mut Editor) {
 /// text the button writes can be round-tripped through the real loader in a
 /// test — a manifest this window writes but the app cannot read would be the
 /// worst possible bug here.
+/// Same path on disk, allowing for how it was spelled.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
 fn manifest(cell_w: i32, cell_h: i32, frames: &[Vec<u16>], ms: &[u32]) -> String {
     let mut s = String::with_capacity(512);
     s.push_str("# Written by PetPal's \"Add a sprite\" window.
@@ -2029,15 +2256,19 @@ mod tests {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Editor;
             assert!(!ptr.is_null());
             let ed = &mut *ptr;
-            // Prefer a raw generated sheet if one is lying around: that is the
-            // case fitting exists for, and the one worth looking at.
-            let raw = std::env::var("PETPAL_PREVIEW_SHEET").ok();
-            let path = raw
-                .as_deref()
-                .map(Path::new)
-                .filter(|p| p.exists())
-                .unwrap_or(Path::new("assets/sprites/turtle/creature.png"));
-            load(ed, path);
+            // PETPAL_PREVIEW_INSTALLED shows the editing path; otherwise load
+            // a sheet from disk the way a drop would.
+            if let Ok(name) = std::env::var("PETPAL_PREVIEW_INSTALLED") {
+                open_installed(ed, &name);
+            } else {
+                let raw = std::env::var("PETPAL_PREVIEW_SHEET").ok();
+                let path = raw
+                    .as_deref()
+                    .map(Path::new)
+                    .filter(|p| p.exists())
+                    .unwrap_or(Path::new("assets/sprites/turtle/creature.png"));
+                load(ed, path);
+            }
             ed.sel = Anim::Climb as usize;
             ed.frames[Anim::Climb as usize] = vec![16, 17];
             set_text(ed.ms_edit, &ed.ms[ed.sel].to_string());
@@ -2305,6 +2536,177 @@ mod tests {
             // same colour as the text, or the window renders as a blank slab.
             assert_ne!(CTL_FIELD.with(|b| *b.borrow()), 0);
             DestroyWindow(hwnd);
+        }
+    }
+
+    /// Editing has to be lossless: open an installed sprite, save it without
+    /// changing anything, and get the same assignments back. If reading and
+    /// writing disagree even slightly, editing silently mangles work.
+    #[test]
+    fn an_edit_round_trips_without_losing_anything() {
+        let dir = std::env::temp_dir().join("petpal-edit-roundtrip");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 8x6 of 64px cells, fully inked.
+        let (cell, cols, rows) = (64u32, 8u32, 6u32);
+        let (w, h) = (cols * cell, rows * cell);
+        let rgba = vec![0x90u8; (w * h * 4) as usize];
+        let f = std::fs::File::create(dir.join("creature.png")).unwrap();
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&rgba).unwrap();
+
+        let mut frames = vec![Vec::new(); ANIM_COUNT];
+        frames[Anim::Idle as usize] = vec![0, 1, 2, 3, 4, 5, 6, 7];
+        // Out of order and with a repeat: playback order must survive.
+        frames[Anim::Climb as usize] = vec![17, 16, 17];
+        frames[Anim::Sit as usize] = vec![44, 45];
+        let mut ms = vec![120u32; ANIM_COUNT];
+        ms[Anim::Idle as usize] = 240;
+        ms[Anim::Climb as usize] = 90;
+        std::fs::write(
+            dir.join("sprite.toml"),
+            manifest(cell as i32, cell as i32, &frames, &ms),
+        )
+        .unwrap();
+
+        // Read it back the way the editor's "Installed" dropdown does.
+        let spec = crate::sprites::read_sheet_spec(&dir, cols).expect("read back");
+        assert_eq!(spec.frame_width, cell);
+        assert_eq!(spec.frame_height, cell);
+        for (i, a) in Anim::ALL.iter().enumerate() {
+            match (&spec.anims[i], frames[i].is_empty()) {
+                (None, true) => {}
+                (Some((got, got_ms)), false) => {
+                    assert_eq!(*got, frames[i], "{a:?} frames changed");
+                    assert_eq!(*got_ms, ms[i], "{a:?} speed changed");
+                }
+                (got, _) => panic!("{a:?}: expected {:?}, read {:?}", frames[i], got.is_some()),
+            }
+        }
+
+        // And writing what was read back must produce the identical file, or
+        // an open-and-save cycle drifts.
+        let reread: Vec<Vec<u16>> = spec
+            .anims
+            .iter()
+            .map(|s| s.as_ref().map(|(f, _)| f.clone()).unwrap_or_default())
+            .collect();
+        let reread_ms: Vec<u32> = spec
+            .anims
+            .iter()
+            .enumerate()
+            .map(|(i, s)| s.as_ref().map(|(_, m)| *m).unwrap_or(ms[i]))
+            .collect();
+        assert_eq!(
+            manifest(cell as i32, cell as i32, &reread, &reread_ms),
+            manifest(cell as i32, cell as i32, &frames, &ms),
+            "open-then-save changed the file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `row = N` shorthand has to expand to the same numbers the editor
+    /// would draw highlights for, or opening a hand-written sprite shows the
+    /// wrong cells selected.
+    #[test]
+    fn the_row_shorthand_expands_the_way_the_editor_shows_it() {
+        let dir = std::env::temp_dir().join("petpal-edit-rowshorthand");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("sprite.toml"),
+            "image = \"creature.png\"\nframe_width = 64\nframe_height = 64\n\n\
+             [anims.idle]\nrow = 0\nframe_ms = 200\n\n\
+             [anims.walk]\nrow = 2\ncount = 3\nframe_ms = 90\n",
+        )
+        .unwrap();
+
+        let spec = crate::sprites::read_sheet_spec(&dir, 8).expect("read");
+        assert_eq!(
+            spec.anims[Anim::Idle as usize].as_ref().unwrap().0,
+            vec![0, 1, 2, 3, 4, 5, 6, 7]
+        );
+        assert_eq!(
+            spec.anims[Anim::Walk as usize].as_ref().unwrap().0,
+            vec![16, 17, 18]
+        );
+        assert!(spec.anims[Anim::Sleep as usize].is_none(), "unassigned stays unassigned");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Saving an unchanged edit must not destroy the artwork.
+    ///
+    /// The source PNG *is* the destination in that case, and `fs::copy` onto
+    /// itself truncates the file — which would delete the creature being
+    /// edited at the moment the author pressed Save.
+    #[test]
+    fn saving_an_edit_does_not_copy_the_image_over_itself() {
+        let dir = std::env::temp_dir().join("petpal-edit-selfcopy");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png_path = dir.join("creature.png");
+        std::fs::write(&png_path, b"not really a png, but bytes to lose").unwrap();
+        let before = std::fs::read(&png_path).unwrap();
+
+        assert!(same_file(&png_path, &dir.join("creature.png")));
+        // Spelled differently, same file.
+        assert!(same_file(&png_path, &dir.join(".").join("creature.png")));
+        assert!(!same_file(&png_path, &dir.join("other.png")));
+
+        assert_eq!(std::fs::read(&png_path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Read every sprite installed on this machine the way the editor's
+    /// dropdown does. `cargo test -- --ignored --nocapture read_installed`.
+    #[test]
+    #[ignore]
+    fn read_installed() {
+        for name in Config::installed_sheets() {
+            let dir = Config::sprites_dir().join(&name);
+            let probe = match crate::sprites::read_sheet_spec(&dir, 0) {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("{name:12} FAILED to parse: {e}");
+                    continue;
+                }
+            };
+            let img = dir.join(&probe.image);
+            let (_, w, h) = match crate::sprites::decode_png_straight(&img) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("{name:12} image unreadable: {e}");
+                    continue;
+                }
+            };
+            let cols = if probe.frame_width > 0 { w / probe.frame_width } else { 0 };
+            let spec = crate::sprites::read_sheet_spec(&dir, cols).unwrap();
+            let assigned: Vec<String> = Anim::ALL
+                .iter()
+                .enumerate()
+                .filter_map(|(i, a)| {
+                    spec.anims[i].as_ref().map(|(f, _)| format!("{}:{}", a.key(), f.len()))
+                })
+                .collect();
+            let cells = cols * (h / probe.frame_height.max(1));
+            let bad: Vec<u16> = spec
+                .anims
+                .iter()
+                .flatten()
+                .flat_map(|(f, _)| f.iter().copied())
+                .filter(|&c| c as u32 >= cells)
+                .collect();
+            println!(
+                "{name:12} {w}x{h} {}px cells, {cols} cols, {} anims [{}]{}",
+                probe.frame_width,
+                assigned.len(),
+                assigned.join(" "),
+                if bad.is_empty() { String::new() } else { format!("  OUT OF RANGE: {bad:?}") },
+            );
         }
     }
 }

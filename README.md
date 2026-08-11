@@ -90,7 +90,7 @@ move like the same creature wearing different clothes: the mouse skitters at
 
 ### Making your own
 
-**Sprite → Add a sprite...** opens a window that does the whole job. Drop a PNG
+**Sprite → Add or edit sprites...** opens a window that does the whole job. Drop a PNG
 on it and it **fits the sheet to a real grid first** — generator output has its
 poses placed by eye, with margins, ground plates and at several times the
 resolution the pixel art needs, so slicing it on any cell size cuts creatures in
@@ -114,6 +114,12 @@ second copy, so the two cannot drift.
 
 **Help → What the controls do** explains every box in terms of its values —
 what a number does to the result and how you can tell it was wrong.
+
+The same window edits and deletes what you already have: pick a creature from
+the **Installed** dropdown and its artwork, grid and frame assignments load for
+changing, or press **Delete** to remove it (after a confirmation that names the
+folder and warns it does not go to the Recycle Bin). Deleting the creature the
+pet is currently wearing puts it back to Pal.
 
 The same fitting is available as [`sheetconv`](tools/sheetconv/) on the command
 line for batches — one implementation, included by both.

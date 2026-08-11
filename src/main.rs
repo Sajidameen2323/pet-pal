@@ -470,20 +470,34 @@ impl App {
     /// Rebuild the sprite set from the current config and refresh everything
     /// that depends on it: the canvas size, the pet's body width, and the tray
     /// icon. Returns a load error if the configured sheet could not be used.
-    /// Switch to a sheet the editor has just written.
+    /// React to the sprite editor writing or deleting a folder.
     ///
-    /// Adopting it immediately is the point of the window: having assigned
-    /// every frame by hand you want to see the creature, not go hunting for it
-    /// in a menu. The config is saved so it survives a restart.
-    fn adopt_sprite(&mut self, name: &str) {
-        self.cfg.sprite = name.to_string();
+    /// Adopting a new sheet immediately is the point of that window: having
+    /// assigned every frame by hand you want to see the creature, not go
+    /// hunting for it in a menu. A deletion only matters if the pet is wearing
+    /// the thing that just stopped existing — left alone it would keep the
+    /// sprites it already has in memory and then fail on the next reload,
+    /// which is a confusing way to find out.
+    fn sprite_folder_changed(&mut self, change: addsprite::Change) {
+        let (name, message) = match change {
+            addsprite::Change::Added(name) => {
+                let msg = format!("Added \"{name}\" — now wearing it.");
+                (name, msg)
+            }
+            addsprite::Change::Removed(name) => {
+                if self.cfg.sprite != name {
+                    return;
+                }
+                let msg = format!("Deleted \"{name}\" — back to Pal.");
+                ("pal".to_string(), msg)
+            }
+        };
+        self.cfg.sprite = name;
         let err = self.apply_sprites();
         let _ = self.cfg.save();
         match err {
             Some(e) => self.tray.notify("PetPal", &e),
-            None => self
-                .tray
-                .notify("PetPal", &format!("Added \"{name}\" — now wearing it.")),
+            None => self.tray.notify("PetPal", &message),
         }
     }
 
@@ -756,8 +770,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             return 0;
         }
         addsprite::WM_SPRITE_ADDED => {
-            if let Some(name) = addsprite::take_added() {
-                with_app(hwnd, |app| app.adopt_sprite(&name));
+            if let Some(change) = addsprite::take_change() {
+                with_app(hwnd, |app| app.sprite_folder_changed(change));
             }
             return 0;
         }
