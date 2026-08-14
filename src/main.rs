@@ -27,6 +27,7 @@ mod render;
 mod reminders;
 mod sheet;
 mod sprites;
+mod startup;
 mod sysinfo;
 mod tray;
 mod vader;
@@ -400,6 +401,9 @@ impl App {
                 scale: self.cfg.scale,
                 roam: self.cfg.roam,
                 sleep_after_idle_secs: self.cfg.sleep_after_idle_secs,
+                // Read fresh: the registry is the setting, and Task Manager's
+                // Startup tab can turn it off without telling us.
+                start_with_windows: startup::is_enabled(),
                 sprites: self.sprite_choices(),
                 sprite: self.cfg.sprite.clone(),
             };
@@ -431,6 +435,25 @@ impl App {
                 self.cfg.jump_between_windows = !self.cfg.jump_between_windows
             }
             CMD_REACT => self.cfg.react_to_new_apps = !self.cfg.react_to_new_apps,
+            CMD_STARTUP => {
+                // Nothing to persist: the registry entry *is* the setting, so
+                // there is no config field to write and no second copy to
+                // disagree with it.
+                save = false;
+                let want = !startup::is_enabled();
+                match startup::set(want) {
+                    Ok(()) if want => self.tray.notify(
+                        "PetPal",
+                        "PetPal will start when you sign in to Windows.",
+                    ),
+                    Ok(()) => self
+                        .tray
+                        .notify("PetPal", "PetPal will no longer start with Windows."),
+                    Err(e) => self
+                        .tray
+                        .notify("PetPal", &format!("Could not change that setting.\n{e}")),
+                }
+            }
             CMD_SLEEP => {
                 self.pet.force_sleep();
                 save = false;
@@ -896,6 +919,11 @@ fn main() {
     if already_running() {
         return;
     }
+
+    // If the startup entry is on but aimed at where the exe used to be, point
+    // it here. Moving a bare exe is the normal way to install this one, and the
+    // alternative is a pet that quietly stops appearing at login.
+    startup::repair();
 
     let hinstance = unsafe { GetModuleHandleW(null_mut()) };
     let class_name = wide("PetPalWindow");

@@ -52,6 +52,7 @@ one for the menu. Only one copy runs at a time.
 | **Roams as much as you like** | One dial, 0-100, for how often it wanders off on its own versus settling down. **Tray → Roam around**. |
 | **Gets annoyed at high CPU** | Above `cpu_annoy_percent` whole-machine load it scowls and steams, with a hysteresis band so it doesn't strobe at the threshold. |
 | **Brings reminders** | `[[reminder]]` blocks in the config fire a tray balloon and an alert animation. |
+| **Starts with Windows** | **Tray → Start with Windows**. Writes one value to the per-user `Run` key — no elevation, no scheduled task, no shortcut. It is the same entry Task Manager's Startup tab lists, so either can turn it off. |
 
 ## Interacting with it
 
@@ -184,6 +185,13 @@ distance rather than an arbitrary second or two.
 `%APPDATA%\PetPal\config.toml`, created on first run. Edit it and pick
 **Reload config & sprites** from the tray menu.
 
+One setting is deliberately *not* in here: **Start with Windows** lives only in
+the registry, under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Two
+copies of one fact drift the moment anything else touches either — Task Manager
+disabling the entry, this file copied to another machine — and then the menu
+shows a checkmark that is a lie. The tick is read back from the key each time
+the menu opens.
+
 ```toml
 scale = 3                      # integer upscale: 3 gives a 96px creature
 opacity = 255                  # 0-255
@@ -289,6 +297,7 @@ That comes from four decisions:
 | `sysinfo.rs` | CPU load, idle time, working set |
 | `tray.rs` | Notification area icon, menu, balloons |
 | `config.rs` | TOML settings |
+| `startup.rs` | The "Start with Windows" toggle, over the per-user `Run` key |
 | `reminders.rs` | Wall-clock scheduling |
 | `win.rs` | String marshalling, clock, PRNG |
 
