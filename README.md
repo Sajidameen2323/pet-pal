@@ -1,12 +1,12 @@
 # PetPal
 
 A small animated creature that lives on your Windows desktop. It walks along
-the top edges of your windows, sits on the taskbar, chases the cursor, curls up
-when you stop typing, gets grumpy when the CPU is pegged, and delivers your
-reminders.
+the top edges of your windows, rides them when you drag them about, sits on the
+taskbar, chases the cursor, shows off the occasional trick, curls up when you
+stop typing, gets grumpy when the CPU is pegged, and delivers your reminders.
 
-Three creatures are built in — pick one from the tray menu, or bring your own
-sprite sheet. No assets, no runtime, no installer: one 760 KB executable.
+Four creatures are built in — pick one from the tray menu, or bring your own
+sprite sheet. No assets, no runtime, no installer: one ~1 MB executable.
 
 ![the creatures](docs/creature.png)
 
@@ -37,12 +37,15 @@ one for the menu. Only one copy runs at a time.
 | Behaviour | How it works |
 |---|---|
 | **Walks across windows** | Top edges of visible windows become ledges, clipped against anything stacked above them — so it never stands on a title bar that is hidden behind another window. |
+| **Rides the window you move** | A ledge remembers which window it came from, so a creature standing on one travels with it — drag the window and it goes along, feet planted, instead of being left in mid-air. It asks the window where it is every frame rather than waiting on the scan, which is far too coarse to follow a drag. Cover the window and it stops riding and drops, as it should. |
+| **Stays on top** | `WS_EX_TOPMOST` is a band, not a ranking: whichever always-on-top window asked most recently sits highest, so installers, media players and notification popups used to bury the creature for good. It renews the claim every second, and immediately when a window opens — without ever taking focus. |
 | **Sits on the taskbar** | The monitor work area's bottom edge is a ledge, which is exactly the top of the taskbar when you have one. |
 | **Hops between windows** | Picks a reachable surface above *or* below and leaps for it, biased by how high it already is so it circulates instead of piling up on the topmost window. A missed leap is just a fall, and it tries again. |
 | **Settles in when it arrives** | After reaching a new surface it explores for a few seconds before considering the next move, so a climb up is not followed by an instant hop back down. Restless creatures get bored sooner: roughly 2.5 s at *Constantly*, 8 s at *Hardly ever*. |
 | **Climbs window edges** | A taskbar and a large window's title bar are routinely 700px apart — no believable jump covers that, so the creature walks to the window's side and scales it. This is what gets it off the taskbar on a real desktop. |
 | **Stays put if you prefer** | **Tray → Jump between windows** off: no hopping, no climbing, no stepping off edges. It roams along whatever surface it is on. |
 | **Sprints the whole length** | Sometimes it aims at the far end of whatever it is standing on and runs the entire way, timing the dash to the actual distance — so it crosses the full taskbar rather than twitching a few pixels. |
+| **Shows off** | Now and then, instead of settling down, it performs a little trick: crouch, spring, twist, land. **Roam** sets how often. Clicking it gets one about half the time — the other half is the old delighted reaction, so a poke is worth repeating. |
 | **Chases the cursor** | Off by default; toggle it in the tray menu. It will hop up onto a window to reach a cursor that is above it, and step off an edge to reach one below. |
 | **Sleeps when idle** | After `sleep_after_idle_secs` with no keyboard or mouse input it walks to a wide ledge and curls up. Any input wakes it. |
 | **Reacts to new apps** | When you open an application, the creature turns to face its window, plays its alert animation and pops a tray balloon naming it. A WinEvent hook spots the new top-level window; rate-limited to one reaction every 8 seconds so a burst of windows at login doesn't set it flailing. |
@@ -54,7 +57,7 @@ one for the menu. Only one copy runs at a time.
 
 - **Drag** it to pick it up, and let go to throw it — it falls and lands on
   whatever is below.
-- **Click** it for a reaction.
+- **Click** it for a reaction — sometimes a trick.
 - **Right-click** it (or the tray icon) for the menu.
 - **Double-click the tray icon** to summon it to your cursor.
 
@@ -105,10 +108,13 @@ manifests usually go wrong: an index into an empty cell is not an error, it just
 makes the creature invisible.
 
 No sheet yet? **Sheet → Copy AI prompt to clipboard** hands you a prompt that
-specifies the layout exactly — one image, 8 squares across by 6 down, row 1
-idle, row 2 walking, row 3 running, the last three rows split between the other
-seven animations, facing right, feet on the bottom edge. Paste it into an image
-generator, drop the result back on the window, and it fits the grid for you.
+specifies the layout exactly — one 512x448 image, 8 squares across by 7 down,
+each square 64x64 (the cell size PetPal works in), row 1 idle, row 2 walking,
+row 3 running, row 7 the trick, the three rows between them split among the
+remaining seven animations, facing right, feet on the bottom edge. Paste it into
+an image generator, drop the result back on the window, and it fits the grid for
+you. Generators that make a mess at that size can be asked for 1024x896 instead
+— same grid, scaled down on the way in.
 The prompt is extracted from the shipped guide at runtime rather than kept as a
 second copy, so the two cannot drift.
 
@@ -135,7 +141,7 @@ laid-out sheet instead of an empty grid:
 2. Open `creature.png` in any pixel editor (Aseprite, Piskel, Paint.NET, even
    Paint if you keep the transparency).
 3. Repaint the cells. Keep the grid alignment — the manifest addresses frames by
-   number, so you can change one cell or all 52.
+   number, so you can change one cell or all 60.
 4. Rename the folder to whatever you want to call your creature.
 5. **Tray → Sprite** and pick it. Already running? **Reload config & sprites**.
 
@@ -151,8 +157,8 @@ into `%APPDATA%\PetPal\sprites\` and it appears in the menu. No path editing
 required.
 
 **[docs/SPRITES.md](docs/SPRITES.md) is the full authoring guide**: grid layout
-and frame numbering, the manifest reference, what each of the ten animations is
-for and when it plays, the anchoring rules, and what the error messages mean.
+and frame numbering, the manifest reference, what each of the eleven animations
+is for and when it plays, the anchoring rules, and what the error messages mean.
 The app drops a copy into the sprites folder on first run, so it is there when
 you need it.
 
@@ -247,7 +253,7 @@ Measured on this machine (8 cores, 1920x1080 @ 125%), release build:
 | Idle/asleep CPU | 0 measurable CPU-seconds over 60 s |
 | Walking CPU | 0.0625 CPU-s over 47 s ≈ **0.13 % of one core** |
 | Private working set | **~1.8 MB** |
-| Executable | 760 KB, no DLLs beyond the OS |
+| Executable | ~1 MB, no DLLs beyond the OS |
 
 That comes from four decisions:
 
@@ -286,8 +292,8 @@ That comes from four decisions:
 | `reminders.rs` | Wall-clock scheduling |
 | `win.rs` | String marshalling, clock, PRNG |
 
-All three creatures are drawn procedurally at startup from a `Pose` struct (body
-bob, ear angle, eye state, leg phase, tail sway, effects), so the 52 frames of
+All four creatures are drawn procedurally at startup from a `Pose` struct (body
+bob, ear angle, eye state, leg phase, tail sway, effects), so the 60 frames of
 each are a small piece of code rather than a binary blob. The pose tables and
 frame timings are shared; only the drawing function differs, so a fourth
 creature is one new module plus a line in `Kind`.
@@ -295,6 +301,29 @@ creature is one new module plus a line in `Kind`.
 Walking and running are eight-phase cycles. Four frames read as a shuffle;
 eight gives a real stride, with the body rising over the planted foot, a
 stretch at full extension and a tail that counter-swings through the cycle.
+
+The trick is eight phases too — crouch, spring, twist, land — and needed no new
+drawing code: it is a squash with the legs tucked, then a stretch with them
+splayed, then a tail flourish. How far the body may lift is set by the mouse,
+whose rig plants its feet at a fixed row; past about three pixels its legs come
+away from its body while the taller creatures still look fine.
+
+### Riding a window
+
+A `Ledge` carries the `HWND` it came from. That one field is what lets a
+creature standing on a title bar travel with it: each tick, before the
+simulation, the pet asks the window where it is now and moves by the difference.
+
+Asking the window directly rather than waiting for the ledge scan is the whole
+trick — the scan runs every 400 ms, and a drag moves much faster than that. It
+also means the scan's copy of the ledge is *stale* while riding, so the usual
+"what am I standing on?" check is skipped for that tick; adopting the stale
+position would drag the creature back to where the window used to be, and the
+3px support tolerance would drop it the moment the window outran it.
+
+Riding stops when the scan no longer lists a ledge for that window — which is
+exactly what happens when another window covers it — and the creature falls,
+which is what it should do when the thing under it is no longer there.
 
 The same fields get reinterpreted per creature — `tail` sways Pal's tail, Vader's
 cape and the mouse's tail; `ears_back` flattens ears or billows a cape; `lean`

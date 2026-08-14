@@ -4,6 +4,7 @@
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
 /// NUL-terminated UTF-16 for the `...W` APIs.
 pub fn wide(s: &str) -> Vec<u16> {
@@ -27,6 +28,51 @@ pub fn wide_into(dst: &mut [u16], s: &str) {
 pub fn from_wide(buf: &[u16]) -> String {
     let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     String::from_utf16_lossy(&buf[..len])
+}
+
+/// Say something before dying, instead of just vanishing.
+///
+/// The crate aborts on panic and is a `windows_subsystem = "windows"` binary, so
+/// it has no console: the default panic message goes nowhere at all. What the
+/// user sees is the window disappearing, which is indistinguishable from a
+/// hang, a crash, and quitting on purpose — and leaves nothing to report.
+///
+/// The hook still runs ahead of the abort, so one message box and one appended
+/// log line turn every future panic into something actionable. Installed first
+/// thing in `main`, before any window exists.
+pub fn install_panic_reporter(log: std::path::PathBuf) {
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown".to_string());
+        let at = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown location".to_string());
+        let body = format!("PetPal {} hit a bug and has to close.\n\n{msg}\n\nat {at}", env!("CARGO_PKG_VERSION"));
+
+        if let Some(parent) = log.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // Appending keeps earlier crashes around; a repeat is the useful signal.
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+            use std::io::Write;
+            let _ = writeln!(f, "[{}ms] {msg} at {at}", now_ms());
+        }
+
+        let text = format!("{body}\n\nWritten to:\n{}", log.display());
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                wide(&text).as_ptr(),
+                wide("PetPal").as_ptr(),
+                MB_ICONERROR | MB_OK,
+            );
+        }
+    }));
 }
 
 /// Milliseconds since boot. Monotonic and cheap (no syscall on modern Windows).

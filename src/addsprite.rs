@@ -145,6 +145,15 @@ const CHECK_B: u32 = argb(0x32, 0x36, 0x41);
 const GRID: u32 = argb(0x5A, 0x60, 0x72);
 const PICK: u32 = argb(0xFF, 0xC4, 0x3C);
 const OTHER: u32 = argb(0x4E, 0x8C, 0xD8);
+const PLAY_BG: u32 = argb(0x24, 0x27, 0x30);
+/// Margin left around the creature in the playback box.
+const PLAY_INSET: i32 = 16;
+
+/// Most cells the editor will treat as a grid. Well above any real sheet — the
+/// built-ins are 52 cells and the fitter refuses more than 1024 — but it bounds
+/// the per-cell work in a repaint, and keeps every cell index inside the `u16`
+/// a frame number is stored as.
+const MAX_CELLS: i32 = 8192;
 
 // ---------------------------------------------------------------------------
 // State
@@ -219,7 +228,14 @@ impl Editor {
         if self.cell_h > 0 { self.ih / self.cell_h } else { 0 }
     }
     fn cell_count(&self) -> i32 {
-        self.cols() * self.rows()
+        self.cols().saturating_mul(self.rows())
+    }
+    /// The cell count as a frame number can express it. Selecting the cell-size
+    /// box and deleting it reads as a 1px cell, which on a large sheet is
+    /// millions of cells — more than a `u16` frame number can address, and the
+    /// old `as u16` wrapped rather than saturating.
+    fn cell_limit(&self) -> u16 {
+        self.cell_count().clamp(0, u16::MAX as i32) as u16
     }
 }
 
@@ -687,6 +703,7 @@ unsafe fn build(hwnd: HWND) -> Editor {
                 Anim::Alert => 160,
                 Anim::Sit => 420,
                 Anim::Climb => 120,
+                Anim::Play => 95,
             };
         }
         sync_list(&ed);
@@ -712,7 +729,7 @@ fn on_command(ed: &mut Editor, id: isize, code: u32) {
             ed.cell_w = read_num(ed.cw_edit).max(1);
             ed.cell_h = read_num(ed.ch_edit).max(1);
             // Cells that no longer exist would render as blanks in the app.
-            let n = ed.cell_count().max(0) as u16;
+            let n = ed.cell_limit();
             for f in ed.frames.iter_mut() {
                 f.retain(|&c| c < n);
             }
@@ -884,7 +901,7 @@ fn open_installed(ed: &mut Editor, name: &str) {
     set_text(ed.cw_edit, &ed.cell_w.to_string());
     set_text(ed.ch_edit, &ed.cell_h.to_string());
 
-    let cells = (ed.cols() * ed.rows()).max(0) as u16;
+    let cells = ed.cell_limit();
     for (i, slot) in spec.anims.iter().enumerate() {
         match slot {
             Some((frames, ms)) => {
@@ -1347,12 +1364,20 @@ pub(crate) fn compose_sheet(
         for x in 0..dw {
             let sx = (x as i64 * iw as i64 / dw as i64) as i32;
             let checker = if ((x / 8) + (y / 8)) % 2 == 0 { CHECK_A } else { CHECK_B };
-            let s = px[(sy * iw + sx) as usize];
+            // `iw * ih` exceeds i32 on a large sheet, and `px` is only promised
+            // to be as long as the caller says it is.
+            let Some(&s) = px.get((sy as i64 * iw as i64 + sx as i64) as usize) else {
+                continue;
+            };
             buf[((oy + y) * vw + ox + x) as usize] = over(s, checker);
         }
     }
 
-    if cols <= 0 || rows <= 0 {
+    // Below one cell there is nothing to overlay; above the budget the grid is
+    // finer than the screen can show and every cell would cost a highlight pass
+    // on a repaint that happens for each mouse move. Drawing the artwork alone
+    // is the honest answer, and it keeps dragging responsive.
+    if cols <= 0 || rows <= 0 || cols.saturating_mul(rows) > MAX_CELLS {
         return View { buf, rect };
     }
     let cw = dw as f32 / cols as f32;
@@ -1454,29 +1479,77 @@ unsafe fn draw_sheet(ed: &mut Editor, dc: windows_sys::Win32::Graphics::Gdi::HDC
     }
 }
 
+/// Composite one cell into a `w` x `h` playback box.
+///
+/// Split out from the paint handler for the same reason [`compose_sheet`] is:
+/// the arithmetic is the whole of it. It also has to survive a cell *larger*
+/// than the box, which is the case that used to take the process out — a 160px
+/// cell in a 288x150 box gave a negative origin, and the first write landed
+/// outside the buffer. Since the crate aborts on panic, that read as the window
+/// simply vanishing.
+pub(crate) fn compose_play(
+    px: &[u32],
+    iw: i32,
+    ih: i32,
+    cell: u16,
+    cols: i32,
+    cw: i32,
+    ch: i32,
+    w: i32,
+    h: i32,
+) -> Vec<u32> {
+    let mut buf = vec![PLAY_BG; (w * h).max(0) as usize];
+    if w <= 0 || h <= 0 || iw <= 0 || ih <= 0 || cols <= 0 || cw <= 0 || ch <= 0 {
+        return buf;
+    }
+    let (cx, cy) = ((cell as i32 % cols) * cw, (cell as i32 / cols) * ch);
+
+    // Whole-number zoom while the cell fits the box, so pixel art stays crisp;
+    // a fractional shrink once it does not, so a big cell is scaled down rather
+    // than drawn past the edges.
+    let (bw, bh) = ((w - PLAY_INSET).max(1), (h - PLAY_INSET).max(1));
+    let (dw, dh) = if cw <= bw && ch <= bh {
+        let s = (bw / cw).min(bh / ch).max(1);
+        (cw * s, ch * s)
+    } else {
+        let s = (bw as f64 / cw as f64).min(bh as f64 / ch as f64);
+        (
+            ((cw as f64 * s) as i32).clamp(1, bw),
+            ((ch as f64 * s) as i32).clamp(1, bh),
+        )
+    };
+    let (ox, oy) = ((w - dw) / 2, (h - dh) / 2);
+
+    for py in 0..dh {
+        let sy = cy + (py as i64 * ch as i64 / dh as i64) as i32;
+        let ty = oy + py;
+        if sy < 0 || sy >= ih || ty < 0 || ty >= h {
+            continue;
+        }
+        for pxi in 0..dw {
+            let sx = cx + (pxi as i64 * cw as i64 / dw as i64) as i32;
+            let tx = ox + pxi;
+            if sx < 0 || sx >= iw || tx < 0 || tx >= w {
+                continue;
+            }
+            let Some(&src) = px.get((sy as i64 * iw as i64 + sx as i64) as usize) else {
+                continue;
+            };
+            let checker = if ((pxi / 8) + (py / 8)) % 2 == 0 { CHECK_A } else { CHECK_B };
+            buf[(ty * w + tx) as usize] = over(src, checker);
+        }
+    }
+    buf
+}
+
 unsafe fn draw_play(ed: &Editor, dc: windows_sys::Win32::Graphics::Gdi::HDC, x: i32, y: i32, w: i32, h: i32) {
     unsafe {
-        let mut buf = vec![argb(0x24, 0x27, 0x30); (w * h) as usize];
-        let idx = ed.frames[ed.sel].get(ed.play).copied();
-        if let (Some(cell), true) = (idx, ed.cols() > 0) {
-            let (cols, cw, ch) = (ed.cols(), ed.cell_w, ed.cell_h);
-            let (cx, cy) = ((cell as i32 % cols) * cw, (cell as i32 / cols) * ch);
-            let s = ((w - 16) / cw.max(1)).min((h - 16) / ch.max(1)).max(1);
-            let (dw, dh) = (cw * s, ch * s);
-            let (ox, oy) = ((w - dw) / 2, (h - dh) / 2);
-            for py in 0..dh {
-                let sy = cy + py / s;
-                for px in 0..dw {
-                    let sx = cx + px / s;
-                    if sx >= ed.iw || sy >= ed.ih {
-                        continue;
-                    }
-                    let checker = if ((px / 8) + (py / 8)) % 2 == 0 { CHECK_A } else { CHECK_B };
-                    let src = ed.px[(sy * ed.iw + sx) as usize];
-                    buf[((oy + py) * w + ox + px) as usize] = over(src, checker);
-                }
-            }
-        }
+        let buf = match ed.frames[ed.sel].get(ed.play).copied() {
+            Some(cell) => compose_play(
+                &ed.px, ed.iw, ed.ih, cell, ed.cols(), ed.cell_w, ed.cell_h, w, h,
+            ),
+            None => vec![PLAY_BG; (w * h).max(0) as usize],
+        };
         blit(dc, &buf, x, y, w, h);
     }
 }
@@ -1487,7 +1560,10 @@ unsafe fn draw_play(ed: &Editor, dc: windows_sys::Win32::Graphics::Gdi::HDC, x: 
 
 fn hit(ed: &Editor, x: i32, y: i32) -> Option<u16> {
     let (cols, rows) = (ed.cols(), ed.rows());
-    if cols <= 0 || rows <= 0 {
+    // Same budget the view draws to: a cell it will not highlight is a cell the
+    // author cannot see they picked, and past 65535 the index does not fit a
+    // frame number at all.
+    if cols <= 0 || rows <= 0 || cols.saturating_mul(rows) > MAX_CELLS {
         return None;
     }
     let v = ed.view;
@@ -1838,6 +1914,25 @@ const HELP: &str = concat!(
 ///
 /// The guide's copy is the one people read and the one the tests check; a
 /// second copy here would be the one that quietly goes stale.
+/// Shown after the prompt goes on the clipboard.
+///
+/// A named constant rather than a literal at the call site so a test can hold
+/// it against the prompt itself. It describes the layout in words, the prompt
+/// states it in numbers, and the two drifted apart the moment the layout
+/// changed — this box was still describing an 8x6 sheet after the guide had
+/// moved to 8x7.
+const PROMPT_COPIED: &str = "Prompt copied.\r\n\r\n\
+     Paste it into an image generator and replace the line beginning \
+     \"THE CREATURE:\" with your own description.\r\n\r\n\
+     It asks for one 512x448 image: 8 squares across, 7 down, 56 in total, \
+     each square 64x64 - the size PetPal works in. Row 1 is idle, row 2 \
+     walking, row 3 running, row 7 the trick, and the three rows between them \
+     are split among the other seven animations.\r\n\r\n\
+     Drop the result back on this window - it will fit the grid for you.\r\n\r\n\
+     If your generator makes a mess at that size, ask it for 1024x896 instead \
+     and drop that in: the grid is the same and it gets scaled down on the way \
+     in.";
+
 fn ai_prompt() -> Option<String> {
     let guide = crate::config::SPRITE_GUIDE;
     let start = guide.find("Generate ONE single image")?;
@@ -1852,16 +1947,7 @@ fn copy_prompt(ed: &Editor) {
     if let Err(e) = set_clipboard(ed.hwnd, &text) {
         return warn(ed.hwnd, &format!("Could not copy to the clipboard.\n\n{e}"));
     }
-    info(
-        ed.hwnd,
-        "Prompt copied.\n\n\
-         Paste it into an image generator and replace the line beginning \
-         \"THE CREATURE:\" with your own description.\n\n\
-         It asks for one image: 8 squares across, 6 down, 48 in total. Row 1 \
-         is idle, row 2 walking, row 3 running, and the last three rows are \
-         split between the other seven animations.\n\n\
-         Drop the result back on this window - it will fit the grid for you.",
-    );
+    info(ed.hwnd, PROMPT_COPIED);
 }
 
 fn set_clipboard(hwnd: HWND, text: &str) -> Result<(), String> {
@@ -2143,6 +2229,81 @@ mod tests {
         assert_eq!(at(0), PICK);
         assert_eq!(at(7), OTHER, "a cell used elsewhere should warn, not hide");
         assert_eq!(at(3), GRID, "an unused cell keeps the plain grid");
+    }
+
+    /// The playback box is a fixed 288x150, and the cell it shows is whatever
+    /// size the sheet says. Nothing bounded the two against each other: a cell
+    /// taller than the box produced a negative origin and the very first write
+    /// went outside the buffer. With `panic = "abort"` that is not an error
+    /// message, it is the window disappearing — and the box repaints on a timer,
+    /// so it happened the instant a large-celled sheet was opened.
+    #[test]
+    fn a_cell_bigger_than_the_playback_box_still_draws_inside_it() {
+        const W: i32 = PANEL_W - 12;
+        const H: i32 = PLAY_H;
+
+        // Across the range the cell-size box accepts, plus the lopsided cases:
+        // either dimension alone overflowing used to be enough.
+        for (cw, ch) in [
+            (16, 16), (64, 64), (128, 128), (150, 150), (151, 151), (160, 160),
+            (256, 256), (64, 400), (400, 64), (512, 512), (1024, 1024),
+        ] {
+            let (cols, rows) = (4, 2);
+            let (px, iw, ih) = sheet(cols, rows, cw.max(ch));
+            for cell in 0..(cols * rows) as u16 {
+                let buf = compose_play(&px, iw, ih, cell, cols, cw, ch, W, H);
+                assert_eq!(buf.len(), (W * H) as usize, "cell {cw}x{ch}");
+                // Something has to have been drawn, or the box is silently blank
+                // and "does not crash" would be passing for the wrong reason.
+                assert!(
+                    buf.iter().any(|&p| p != PLAY_BG),
+                    "cell {cw}x{ch} frame {cell} drew nothing"
+                );
+            }
+        }
+    }
+
+    /// A frame number the sheet does not have, a grid of nothing, an empty
+    /// buffer: all reachable while the author is mid-edit, none of them a crash.
+    #[test]
+    fn the_playback_box_survives_a_nonsense_grid() {
+        let (px, iw, ih) = sheet(4, 2, 16);
+        let cases: [(i32, i32, u16, i32, i32, i32); 6] = [
+            // iw, ih, cell, cols, cell_w, cell_h
+            (iw, ih, 900, 4, 16, 16),  // frame number past the end of the sheet
+            (iw, ih, 0, 0, 16, 16),    // no columns
+            (iw, ih, 0, 4, 0, 0),      // cell size cleared to zero
+            (0, 0, 0, 4, 16, 16),      // no image loaded yet
+            (iw, ih, u16::MAX, 4, 16, 16),
+            (iw, ih, 0, 4, -8, -8),    // negative, via a sign in the edit box
+        ];
+        for (w, h, cell, cols, cw, ch) in cases {
+            let buf = compose_play(&px, w, h, cell, cols, cw, ch, PANEL_W - 12, PLAY_H);
+            assert_eq!(buf.len(), ((PANEL_W - 12) * PLAY_H) as usize);
+        }
+        // A zero-sized box allocates nothing rather than panicking on the
+        // multiply.
+        assert!(compose_play(&px, iw, ih, 0, 4, 16, 16, 0, 0).is_empty());
+    }
+
+    /// Clearing the cell-size box reads as a 1px cell. On a sheet of any size
+    /// that is a grid with more cells than a frame number can hold, and the old
+    /// `as u16` wrapped: cell 65536 came back as frame 0, so clicking one cell
+    /// highlighted a different one.
+    #[test]
+    fn an_absurdly_fine_grid_is_refused_rather_than_wrapped() {
+        let (px, iw, ih) = sheet(4, 2, 64); // 256 x 128
+        let (cols, rows) = (iw, ih); // a 1px grid: 32768 cells
+        assert!(cols * rows > MAX_CELLS);
+        let none = |_: u16| false;
+        let v = compose_sheet(&px, iw, ih, cols, rows, &[], &none, 400, 300);
+
+        // The artwork is still drawn; only the unreadable overlay is dropped.
+        assert!(v.rect.right > v.rect.left, "the sheet should still be shown");
+        assert!(
+            !v.buf.iter().any(|&p| p == GRID || p == PICK || p == OTHER),
+            "a grid this fine should not be overlaid"
+        );
     }
 
     /// Transparency has to be visible, or the author cannot tell an empty cell
@@ -2458,8 +2619,10 @@ mod tests {
         assert!(!p.contains("```"), "the fence must not be included");
 
         for needed in [
-            "8 columns and 6 rows",
-            "48 equal squares",
+            "8 columns and 7 rows",
+            "56 equal squares",
+            "64x64 pixels",
+            "512 pixels wide and 448 pixels tall",
             "THE CREATURE:",
             "FACES RIGHT",
             "transparent background",
@@ -2472,9 +2635,55 @@ mod tests {
         // Every animation the tool can assign should be described somewhere in
         // the prompt, or the generated sheet will be missing poses.
         let low = p.to_lowercase();
-        for word in ["idle", "walk", "run", "climb", "fall", "asleep", "annoyed", "surprised", "sitting", "held"] {
+        for word in [
+            "idle", "walk", "run", "climb", "fall", "asleep", "annoyed", "surprised", "sitting",
+            "held", "playing",
+        ] {
             assert!(low.contains(word), "prompt does not ask for {word:?}");
         }
+    }
+
+    /// The box that appears after copying describes the layout in prose; the
+    /// prompt states it in numbers. They have to agree, and they did not — the
+    /// box was still saying "8 across, 6 down, 48 in total" after the sheet had
+    /// grown a seventh row, so anyone reading it would have drawn the wrong
+    /// thing and had no idea why.
+    #[test]
+    fn the_copied_message_describes_the_prompt_it_copied() {
+        let p = ai_prompt().expect("the guide must contain the AI prompt");
+
+        // Every figure the message quotes has to be in the prompt itself.
+        for n in ["512", "448", "64x64", "8", "7", "56"] {
+            assert!(
+                PROMPT_COPIED.contains(n),
+                "the message stopped mentioning {n:?}"
+            );
+        }
+        assert!(p.contains("512 pixels wide and 448 pixels tall"));
+        assert!(p.contains("8 columns and 7 rows = 56 equal squares"));
+        assert!(p.contains("64x64 pixels"));
+
+        // And no figure from a layout we have left behind.
+        for stale in ["8x6", "48 in total", "1024 pixels", "128x128"] {
+            assert!(
+                !PROMPT_COPIED.contains(stale),
+                "the message still refers to {stale:?}"
+            );
+        }
+
+        // The fallback size it offers has to be one the guide actually blesses,
+        // or it is advice pointing nowhere.
+        assert!(
+            crate::config::SPRITE_GUIDE.contains("1024x896"),
+            "the message offers 1024x896 but the guide no longer mentions it"
+        );
+
+        // Message boxes take CRLF; a bare \n renders as a space in one of them.
+        assert!(PROMPT_COPIED.contains("\r\n"), "the message needs CRLF");
+        assert!(
+            !PROMPT_COPIED.contains('\u{2019}') && !PROMPT_COPIED.contains('—'),
+            "keep the message to characters a message box renders everywhere"
+        );
     }
 
     /// Every control on the window should be explained. A control nobody can

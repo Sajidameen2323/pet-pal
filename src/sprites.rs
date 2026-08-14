@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-pub const ANIM_COUNT: usize = 10;
+pub const ANIM_COUNT: usize = 11;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Anim {
@@ -22,6 +22,8 @@ pub enum Anim {
     Alert = 7,
     Sit = 8,
     Climb = 9,
+    /// Showing off: a little trick played for its own sake.
+    Play = 10,
 }
 
 impl Anim {
@@ -36,6 +38,7 @@ impl Anim {
         Anim::Alert,
         Anim::Sit,
         Anim::Climb,
+        Anim::Play,
     ];
 
     pub fn key(self) -> &'static str {
@@ -50,6 +53,7 @@ impl Anim {
             Anim::Alert => "alert",
             Anim::Sit => "sit",
             Anim::Climb => "climb",
+            Anim::Play => "play",
         }
     }
 }
@@ -315,6 +319,8 @@ pub(crate) enum Fx {
     Zzz(u8),
     Steam(u8),
     Bang(u8),
+    /// Little four-pointed sparks thrown off a trick.
+    Spark(u8),
 }
 
 #[derive(Clone, Copy)]
@@ -628,6 +634,25 @@ pub(crate) fn draw_fx_at(r: &mut Raster, p: &Pose, pal: &Palette, head_x: i32) {
             r.rect(x - 1, y, x + 1, y + 4, pal.accent);
             r.rect(x - 2, y + 6, x + 2, y + 8, pal.outline);
             r.put(x, y + 7, pal.accent);
+        }
+        Fx::Spark(ph) => {
+            // Three four-pointed sparks arcing over the creature, each one
+            // swelling and fading on its own phase so the flourish reads as
+            // motion rather than as three dots that appeared at once.
+            const AT: [(i32, i32); 3] = [(11, 8), (21, 4), (28, 10)];
+            for (i, &(bx, by)) in AT.iter().enumerate() {
+                let t = ((ph as usize + i * 2) % 6) as f32 / 6.0;
+                // Biggest in the middle of its cycle, gone at the ends.
+                let size = if t < 0.2 || t > 0.8 { 0 } else if t < 0.5 { 2 } else { 1 };
+                if size == 0 {
+                    continue;
+                }
+                let (x, y) = (sx(bx), by - (t * 3.0) as i32);
+                let c = fade(pal.accent, 1.0 - t * 0.5);
+                r.hline(x - size, x + size, y, c);
+                r.rect(x, y - size, x, y + size, c);
+                r.put(x, y, fade(pal.belly, 1.0 - t * 0.5));
+            }
         }
     }
 }
@@ -943,6 +968,42 @@ fn build_creature(draw: DrawFn, pal: &Palette, fw: i32, fh: i32) -> SpriteSet {
         })
         .collect();
 
+    // Play: a show-off routine, done for no reason at all — crouch, spring,
+    // twist at the top, and land with a flourish and a spark or two.
+    //
+    // Built entirely from the existing pose knobs, so every creature gets it
+    // without a new drawing path: the anticipation is a deep squash with the
+    // legs tucked, the leap a stretch with them splayed, and the twist is a
+    // lean carried past vertical while the tail whips the other way. The eyes
+    // stay happy throughout — this is the one animation the creature chooses
+    // to do, and it should read as pleased with itself.
+    let play: Vec<Pose> = (0..8)
+        .map(|i| Pose {
+            legs: [
+                Legs::Tuck, Legs::Tuck, Legs::Splay, Legs::Splay,
+                Legs::Splay, Legs::Stand, Legs::Tuck, Legs::Stand,
+            ][i],
+            // Kept inside the range the run cycle already exercises. Lifting
+            // the body further reads fine on the taller creatures but pulls the
+            // mouse's legs clean off it: its rig plants the feet at a fixed
+            // ground row, so past about -3 the limb no longer reaches. The
+            // height comes from the splayed legs and the stretch instead.
+            body_dy: [2, 3, -1, -3, -2, 0, 2, 0][i],
+            head_dy: [1, 2, -1, -2, -2, 0, 1, -1][i],
+            head_dx: [0, -1, 0, 1, 2, 1, 0, 0][i],
+            squash: [1, 2, -2, -2, -1, 1, 1, 0][i],
+            lean: [-1, -2, 0, 2, 3, 1, -1, 0][i],
+            tail: [-2, -3, 0, 2, 3, 2, -1, 1][i],
+            eyes: Eyes::Happy,
+            blush: true,
+            fx: [
+                Fx::None, Fx::None, Fx::Spark(0), Fx::Spark(1),
+                Fx::Spark(2), Fx::Spark(3), Fx::Spark(4), Fx::None,
+            ][i],
+            ..Default::default()
+        })
+        .collect();
+
     // Order must match the `Anim` discriminants.
     clips.push(bake(&mut frames, &idle, 240));
     clips.push(bake(&mut frames, &walk, 65));
@@ -954,6 +1015,7 @@ fn build_creature(draw: DrawFn, pal: &Palette, fw: i32, fh: i32) -> SpriteSet {
     clips.push(bake(&mut frames, &alert, 150));
     clips.push(bake(&mut frames, &sit, 420));
     clips.push(bake(&mut frames, &climb, 85));
+    clips.push(bake(&mut frames, &play, 95));
 
     SpriteSet {
         w: fw as u32,
@@ -1074,7 +1136,11 @@ pub fn load_sheet(dir: &Path) -> Result<SpriteSet, String> {
             m.frame_height
         ));
     }
-    let cells = (cols * rows) as u16;
+    // Frame numbers are `u16`, so a grid finer than that has cells no manifest
+    // can name. Casting straight to `u16` wrapped instead — and a sheet that
+    // gridded to an exact multiple of 65536 wrapped to *zero* cells, leaving
+    // `frames` empty for an `idle` clip that still pointed at frame 0.
+    let cells = (cols as u64 * rows as u64).min(u16::MAX as u64) as u16;
 
     // Slice every cell once; clips then reference them by index.
     let fw = m.frame_width as usize;
@@ -1089,6 +1155,12 @@ pub fn load_sheet(dir: &Path) -> Result<SpriteSet, String> {
             px[y * fw..(y + 1) * fw].copy_from_slice(&sheet[src..src + fw]);
         }
         frames.push(Frame { px });
+    }
+    // Everything below assumes frame 0 exists — `idle` falls back to it, and
+    // every other animation falls back to `idle`. Saying so here is cheaper than
+    // making the per-frame accessor defensive.
+    if frames.is_empty() {
+        return Err(format!("{}: no frames in the sheet", img_path.display()));
     }
 
     let resolve = |spec: &AnimSpec| -> Vec<u16> {
@@ -1150,6 +1222,19 @@ pub fn load_sheet(dir: &Path) -> Result<SpriteSet, String> {
         };
     }
 
+    // `play` is newer still, so every sheet written before it lacks one. Idle
+    // is the wrong fallback for the same reason it was wrong for climb: the
+    // creature would announce a trick and then stand there. The alert pose is
+    // already a pleased, animated reaction, which is the nearest thing a sheet
+    // drawn without a trick actually contains.
+    if !m.anims.contains_key(Anim::Play.key()) {
+        let alert = &clips[Anim::Alert as usize];
+        clips[Anim::Play as usize] = Clip {
+            idx: alert.idx.clone(),
+            frame_ms: alert.frame_ms,
+        };
+    }
+
     Ok(SpriteSet {
         w: m.frame_width,
         h: m.frame_height,
@@ -1173,14 +1258,42 @@ pub(crate) fn decode_png_straight(path: &Path) -> Result<(Vec<u32>, u32, u32), S
     decode(path, false)
 }
 
+/// Largest sheet the pipeline will take on, in pixels.
+///
+/// Not an arbitrary round number: the editor keeps the decoded image twice (the
+/// file as loaded, plus the fitted version), and the fitter copies it again and
+/// floods a same-sized visited map over it. At four bytes a pixel that is about
+/// five copies, so 32 megapixels is already ~640 MB of peak working set. The
+/// decoder's own default cap is 64 MB — about 16 megapixels — which quietly
+/// refused sheets this app can handle perfectly well, with the message "limits
+/// are exceeded" and nothing about what to do next.
+const MAX_PIXELS: u64 = 32 * 1024 * 1024;
+
 fn decode(path: &Path, premul: bool) -> Result<(Vec<u32>, u32, u32), String> {
     let conv = |c: u32| if premul { premultiply(c) } else { c };
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
+    // Sized so `MAX_PIXELS` is what actually decides, and the refusal below is
+    // the one the user sees.
+    decoder.set_limits(png::Limits { bytes: (MAX_PIXELS * 5) as usize });
     let mut reader = decoder
         .read_info()
         .map_err(|e| format!("{}: {e}", path.display()))?;
+
+    let info0 = reader.info();
+    let (iw, ih) = (info0.width as u64, info0.height as u64);
+    if iw * ih > MAX_PIXELS {
+        return Err(format!(
+            "{} is {iw}x{ih} ({} megapixels), larger than PetPal can open ({} megapixels).\n\n\
+             Sprite sheets do not need to be this big — the art is drawn at cell size, \
+             not at sheet size. Scale it down to around 2048x2048 and it will still be \
+             far more detail than a desktop pet shows.",
+            path.display(),
+            (iw * ih) / (1024 * 1024),
+            MAX_PIXELS / (1024 * 1024),
+        ));
+    }
 
     let mut buf = vec![0u8; reader.output_buffer_size().unwrap_or(0)];
     let info = reader

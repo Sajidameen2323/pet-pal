@@ -57,12 +57,13 @@ Two things in its menu bar before you start:
 
 1. **Drop your PNG on the window**, or click Browse.
 2. **It fixes the sheet for you.** Straight out of an image generator, a sheet
-   has its poses placed by eye, wide margins, often a little ground plate under
-   each one, and is several times larger than the pixel art it depicts —
-   slicing that on any cell size cuts creatures in half. The window finds where
-   the poses actually are and re-lays them on a real grid, feet on the bottom
-   row of each cell, removing an opaque background if there is one. It says
-   what it did in the line at the top right.
+   has its poses placed by eye, wide margins, and often a little ground plate
+   under each one — slicing that on any cell size cuts creatures in half. That
+   is true even when you asked for the exact final size, because "56 equal
+   squares" is a request generators honour loosely. The window finds where the
+   poses actually are and re-lays them on a real grid, feet on the bottom row
+   of each cell, removing an opaque background if there is one, and scaling
+   down if you asked big. It says what it did in the line at the top right.
 
    A sheet that is *already* on an exact grid is left alone, because fitting
    resamples and would soften art somebody drew correctly.
@@ -122,14 +123,21 @@ end.
 
 ## B1. The sheet you are asking for
 
-**One single image. 8 squares across, 6 squares down. 48 squares in total.**
+**One single image. 8 squares across, 7 squares down. 56 squares in total.**
 
-Ask for 8x6 rather than some other shape because 8x6 is a 4:3 picture, which is
-a shape image generators are good at. Tall thin sheets come back distorted.
+Ask for a wide sheet rather than a tall one: generators handle landscape grids
+far better, and tall thin sheets come back distorted. Eight across and seven
+down stays comfortably wider than it is high.
 
-At 128 pixels per square that is a 1024x768 image, a size every generator
-handles. The converter in step B3 shrinks it to the 64-pixel squares PetPal
-wants, so ask big and let the tool reduce it.
+**Each square is 64x64 pixels**, which is the cell size PetPal works in, so the
+whole image is 512x448. Asking at the final size means the art you get is the
+art that ships — nothing is resampled on the way in, and a generator that draws
+crisp pixels gives you crisp pixels.
+
+If your generator struggles at that size — some produce mush below about 768px
+and do better with room to work — ask for **1024x896** instead, four times the
+area with 128px squares, and let the converter in step B3 reduce it. Everything
+downstream handles either; only the numbers in the prompt change.
 
 This is the exact map. The numbers inside are square numbers, and **squares
 count from 0** — that is how the file format numbers them, and it is what the
@@ -144,13 +152,14 @@ the way a person would read them.
     row 4 |   24   25   26   27   |  28   29   30   31  |  CLIMB 4 | FALL 4
     row 5 |   32   33   34   35   |  36   37   38   39  |  SLEEP 4 | ANNOYED 4
     row 6 |   40   41   42   43   |  44   45 | 46   47  |  ALERT 4 | SIT 2 | HELD 2
+    row 7 |   48   49   50   51      52   53   54   55  |  PLAY, all 8
 ```
 
-The first three rows are one animation each. The last three are split, because
-ten animations do not divide evenly into six rows — but you never have to work
-any of it out, because the settings file in B4 already has the numbers.
+Rows 1-3 and row 7 are one animation each. Rows 4-6 are split, because eleven
+animations do not divide evenly into seven rows — but you never have to work any
+of it out, because the settings file in B4 already has the numbers.
 
-**Every one of the 48 squares must have artwork in it.** An empty square is not
+**Every one of the 56 squares must have artwork in it.** An empty square is not
 an error — the creature just turns invisible for that whole animation, with no
 warning. This is the single most common thing that goes wrong.
 
@@ -165,15 +174,18 @@ Do not give me separate images. Everything must be in one picture.
 THE CREATURE: A SMALL FRIENDLY RED DRAGON.
 
 SIZE AND GRID - follow exactly:
-- One image, 1024 pixels wide and 768 pixels tall.
-- Divided into a grid of 8 columns and 6 rows = 48 equal squares,
-  each 128x128 pixels.
+- One image, 512 pixels wide and 448 pixels tall.
+- Divided into a grid of 8 columns and 7 rows = 56 equal squares,
+  each exactly 64x64 pixels.
+- True pixel art at this size: chunky, deliberate pixels, no
+  anti-aliasing, no blur. Each square is only 64x64, so keep the
+  creature simple and readable rather than detailed.
 - Do NOT draw the grid lines. Do NOT write any numbers, labels,
   captions or text anywhere in the image.
 - Fully transparent background. No ground, no floor, no platform,
   no shadow, no scenery, no border, no frame, no colour behind
   the creature.
-- Exactly one creature in every square. All 48 squares are used.
+- Exactly one creature in every square. All 56 squares are used.
 - It is the SAME creature at the SAME size in every square.
 - The creature FACES RIGHT in every single square. Never left.
 - Its FEET TOUCH THE BOTTOM EDGE of its square, except in the
@@ -221,6 +233,12 @@ Row 6, squares 7-8 - BEING HELD UP in mid-air by the scruff of
   the neck: arms and legs hanging limp, eyes wide, swinging
   gently. Off the ground.
 
+Row 7, all 8 squares - PLAYING, showing off a little trick: it
+  crouches, springs up off the ground, twists happily at the top
+  with its limbs out, then lands and strikes a pleased pose.
+  Delighted expression throughout. Squares 3-6 are off the
+  ground; the rest have the feet down. This is a loop.
+
 STYLE: chunky readable pixel art, bold dark outline, flat colours,
 no anti-aliasing, no gradients, no soft shadows.
 ```
@@ -257,9 +275,9 @@ sheetconv.exe "C:\path\to\what-the-ai-made.png" out
 On typical generator output that plain run prints this, and it is **wrong**:
 
 ```
-input      1024x768
+input      512x448
 grid       1 columns x 1 rows = 1 cells
-sprites    1 found, largest 1024x768, scaled by 0.061
+sprites    1 found, largest 512x448, scaled by 0.121
 wrote      out\creature.png  (64x64, 64px cells)
 wrote      out\sprite.toml
 ```
@@ -269,16 +287,16 @@ solid, so the whole image read as one enormous creature, and the entire sheet
 has been squashed into a single 64x64 square.
 
 **The line to check is the grid line. It must say
-`8 columns x 6 rows = 48 cells`.** Nothing else matters until it does. The tool
+`8 columns x 7 rows = 56 cells`.** Nothing else matters until it does. The tool
 has no idea what you were aiming for, so it will never complain — a wrong result
 still ends in `wrote`.
 
 | The grid line says | What happened | Add |
 |---|---|---|
 | `1 columns x 1 rows = 1 cells` | The background is solid, so the whole image reads as one big picture | `--key-bg` |
-| A count that is too small | Two pictures are touching, so they merged | `--cols 8 --rows 6` |
+| A count that is too small | Two pictures are touching, so they merged | `--cols 8 --rows 7` |
 | Empty squares down the outer columns | You forced `--cols`/`--rows` on a sheet with wide margins | Remove them and let it detect |
-| `8 columns x 6 rows` but there is a pale sliver under the feet | A ground plate is painted under each pose | `--trim-bottom 13`, then adjust |
+| `8 columns x 7 rows` but there is a pale sliver under the feet | A ground plate is painted under each pose | `--trim-bottom 6`, then adjust |
 | `no sprites found` | The image is blank, or the keying erased everything | Check the file; try a smaller `--key-bg` number |
 
 **Add options one at a time, and only when the grid line tells you to.** In
@@ -289,20 +307,20 @@ finds where the pictures actually are. Here is the same image again, done
 properly:
 
 ```
-sheetconv.exe input.png out --key-bg --trim-bottom 13
+sheetconv.exe input.png out --key-bg --trim-bottom 6
 ```
 
 ```
-input      1024x768
+input      512x448
 keyed      background removed by border flood, tolerance 30
-grid       8 columns x 6 rows = 48 cells
-trim       13 px off the bottom of each sprite
-sprites    48 found, largest 72x61, scaled by 0.862
-wrote      out\creature.png  (512x384, 64px cells)
+grid       8 columns x 7 rows = 56 cells
+trim       6 px off the bottom of each sprite
+sprites    56 found, largest 63x57, scaled by 0.985
+wrote      out\creature.png  (512x448, 64px cells)
 wrote      out\sprite.toml
 ```
 
-`48 found` and a `512x384` sheet — that is the one you want.
+`56 found` and a `512x448` sheet — that is the one you want.
 
 For `--trim-bottom`, measure the plate: open the PNG, zoom into one picture, and
 count the pixels from the bottom of the plate up to where the feet actually
@@ -382,11 +400,16 @@ frame_ms = 420
 [anims.drag]
 frames = [46, 47]
 frame_ms = 200
+
+[anims.play]
+row = 6
+frame_ms = 95
 ```
 
 `row = 1` means "the whole of row 1", which is why the first three animations
-need no numbers. The rest name their squares directly, and between them they use
-all 48 exactly once.
+and the last one need no numbers — note that `row` counts from 0, so the
+seventh row is `row = 6`. The rest name their squares directly, and between them
+they use all 56 exactly once.
 
 If `sheetconv` reported a cell size other than 64, change **both**
 `frame_width` and `frame_height` to that number, and nothing else. Do not change
@@ -415,7 +438,7 @@ Then walk this list:
 
 You control the grid, so nothing needs converting. Two options:
 
-* **Use the B1 map** — 8 across, 6 down, 64x64 squares, image 512x384 — and the
+* **Use the B1 map** — 8 across, 7 down, 64x64 squares, image 512x448 — and the
   `sprite.toml` from B4 works unchanged.
 * **Make up your own layout** and write the manifest yourself. See the manifest
   reference below; you can put any animation on any squares.
@@ -446,11 +469,13 @@ creature actually *is*. Empty space on one side shifts it off its own standing
 point, which shows up as it hugging one end of a ledge. Centre the body and let
 a tail or a trailing effect be the thing that overhangs.
 
-## The ten animations
+## The eleven animations
 
 Every one is optional. Anything you leave out falls back to `idle`, so a sheet
 with one idle picture already works, and `idle` + `walk` is enough to feel
-alive. The exception is `climb`, which falls back to `walk`.
+alive. Two exceptions: `climb` falls back to `walk`, and `play` to `alert` —
+idle would be the wrong answer for both, since a creature that announced a climb
+or a trick and then stood perfectly still reads as broken.
 
 | Name | When it plays |
 |---|---|
@@ -464,8 +489,22 @@ alive. The exception is `climb`, which falls back to `walk`.
 | `alert` | Reminders, an app opening, and clicking the pet. |
 | `sit` | Resting. Alternates with `idle`; **Roam** sets how often. |
 | `climb` | Going up the side of a window too tall to jump onto. |
+| `play` | A trick, done for its own sake. Sometimes when you click it, sometimes off its own bat; **Roam** sets how often. |
 
 Animations loop, and switching animation restarts at the first picture.
+
+### Drawing `play`
+
+The one animation the creature performs *because it wants to*, so it should
+read as pleased with itself rather than merely busy. The built-ins crouch,
+spring off the ground, twist at the top, and land in a flourish — but anything
+with a clear beginning and end works: a spin, a bow, a tumble, a wave.
+
+* It plays on the spot, so the creature must not appear to travel across the
+  square.
+* Feet leave the ground in the middle of it, so rule 2 applies only to the
+  first and last pictures.
+* Four pictures is enough; eight lets the spring and the landing both breathe.
 
 ### Drawing `climb`
 
@@ -532,12 +571,12 @@ not crash anything — the animation just gets shorter.
 
 **A number pointing at an empty square is not an error, and that is the one to
 watch for.** Nothing warns you; the creature becomes invisible for that whole
-animation. A 8x6 grid is 48 squares whether or not you drew in all of them, and
+animation. An 8x7 grid is 56 squares whether or not you drew in all of them, and
 it is easy to write `38` when the art you meant is at `40`.
 
 ## The built-in layout
 
-**Make a copy to edit...** writes 52 pictures on an 8-wide sheet. Three
+**Make a copy to edit...** writes 60 pictures on an 8-wide sheet. Three
 animations share row 4, so this layout needs counting — it exists to match what
 the built-in creatures actually contain, not because it is a good starting
 point. Prefer the one-animation-per-row layout in section B.
@@ -586,6 +625,10 @@ frame_ms = 420
 [anims.climb]
 frames = [44, 45, 46, 47, 48, 49, 50, 51]
 frame_ms = 85
+
+[anims.play]
+frames = [52, 53, 54, 55, 56, 57, 58, 59]
+frame_ms = 95
 ```
 
 ## Installing

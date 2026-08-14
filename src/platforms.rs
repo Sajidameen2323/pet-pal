@@ -28,9 +28,21 @@ pub struct Ledge {
     pub x0: i32,
     pub x1: i32,
     pub y: i32,
+    /// The window whose top edge this is, or null for a monitor floor.
+    ///
+    /// Geometry alone cannot answer "is this the same surface as last tick?",
+    /// and that question is what lets the creature travel with a window you are
+    /// dragging instead of being left behind by it.
+    pub owner: HWND,
 }
 
 impl Ledge {
+    /// A surface with no window behind it: monitor floors, and every test that
+    /// only cares where the ground is.
+    pub fn at(x0: i32, x1: i32, y: i32) -> Ledge {
+        Ledge { x0, x1, y, owner: null_mut() }
+    }
+
     #[inline]
     pub fn holds(&self, x: i32) -> bool {
         x >= self.x0 && x <= self.x1
@@ -39,6 +51,12 @@ impl Ledge {
     #[inline]
     pub fn width(&self) -> i32 {
         self.x1 - self.x0
+    }
+
+    /// The window this surface belongs to, if it belongs to one.
+    #[inline]
+    pub fn window(&self) -> Option<HWND> {
+        if self.owner.is_null() { None } else { Some(self.owner) }
     }
 }
 
@@ -175,11 +193,8 @@ impl World {
         // The work area already excludes the taskbar, so its bottom edge is
         // exactly "standing on the taskbar" when one is present.
         for m in &self.monitors {
-            self.ledges.push(Ledge {
-                x0: m.work.left,
-                x1: m.work.right,
-                y: m.work.bottom,
-            });
+            self.ledges
+                .push(Ledge::at(m.work.left, m.work.right, m.work.bottom));
         }
     }
 
@@ -377,6 +392,16 @@ impl World {
             .copied()
     }
 
+    /// Does the last scan still show a standable edge belonging to `hwnd`?
+    ///
+    /// Asked while the creature is riding a window: the *position* in the scan
+    /// is stale between refreshes and deliberately ignored, but its presence is
+    /// not. A window that gets covered by another loses its ledge here, and
+    /// that is what ends the ride and lets the creature fall.
+    pub fn owns_ledge(&self, hwnd: HWND) -> bool {
+        self.ledges.iter().any(|l| std::ptr::eq(l.owner, hwnd))
+    }
+
     /// Nearest ledge to a point, preferring wide ones — used to pick a bed.
     pub fn nearest_ledge(&self, x: i32, y: i32) -> Option<Ledge> {
         let mut best: Option<(i64, Ledge)> = None;
@@ -459,7 +484,9 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
 
     for &(a, b) in &ctx.segs {
         if b - a >= MIN_LEDGE_WIDTH && ctx.ledges.len() < MAX_LEDGES {
-            ctx.ledges.push(Ledge { x0: a, x1: b, y });
+            // Tagged with the window it came from, so a creature standing here
+            // can be carried along when that window moves.
+            ctx.ledges.push(Ledge { x0: a, x1: b, y, owner: hwnd });
         }
     }
 
@@ -665,9 +692,9 @@ mod tests {
                 work: RECT { left: 0, top: 0, right: 1000, bottom: 960 },
             }],
             ledges: vec![
-                Ledge { x0: 0, x1: 1000, y: 960 },   // floor
-                Ledge { x0: 100, x1: 400, y: 700 },  // a window near us
-                Ledge { x0: 800, x1: 900, y: 300 },  // far away and high
+                Ledge::at(0, 1000, 960),   // floor
+                Ledge::at(100, 400, 700),  // a window near us
+                Ledge::at(800, 900, 300),  // far away and high
             ],
             walls: Vec::new(),
             next_scan_ms: 0,

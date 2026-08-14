@@ -259,5 +259,20 @@ fn draw_fx(r: &mut Raster, p: &Pose, pal: &Palette) {
             r.rect(x - 2, y + 6, x + 2, y + 8, pal.outline);
             r.put(x, y + 7, pal.accent);
         }
+        Fx::Spark(ph) => {
+            // Same flourish as the other creatures, in his own colours.
+            const AT: [(i32, i32); 3] = [(11, 8), (21, 4), (28, 10)];
+            for (i, &(bx, by)) in AT.iter().enumerate() {
+                let t = ((ph as usize + i * 2) % 6) as f32 / 6.0;
+                let size = if t < 0.2 || t > 0.8 { 0 } else if t < 0.5 { 2 } else { 1 };
+                if size == 0 {
+                    continue;
+                }
+                let y = by - (t * 3.0) as i32;
+                let c = fade(pal.accent, 1.0 - t * 0.5);
+                r.hline(bx - size, bx + size, y, c);
+                r.rect(bx, y - size, bx, y + size, c);
+            }
+        }
     }
 }

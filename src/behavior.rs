@@ -4,6 +4,8 @@
 //! alert, which beats sleeping, which beats being annoyed, which beats chasing
 //! the cursor, which beats idle wandering — so behaviours can never fight.
 
+use windows_sys::Win32::Foundation::HWND;
+
 use crate::config::Config;
 use crate::platforms::{Ledge, Wall, World};
 use crate::sprites::{Anim, SpriteSet};
@@ -22,6 +24,8 @@ pub enum State {
     Sit,
     /// Scaling the vertical edge of a window.
     Climb,
+    /// Showing off: a little trick, done for its own sake.
+    Play,
 }
 
 impl State {
@@ -37,6 +41,7 @@ impl State {
             State::Alert => Anim::Alert,
             State::Sit => Anim::Sit,
             State::Climb => Anim::Climb,
+            State::Play => Anim::Play,
         }
     }
 }
@@ -127,6 +132,13 @@ const JUMP_COOLDOWN_MS: u32 = 1_100;
 const CPU_HYSTERESIS: f32 = 0.12;
 /// Redraw cadence while the pet is actually moving (40 fps).
 const MOVE_STEP_MS: u32 = 25;
+/// How long a trick is held. Long enough for a couple of loops of the built-in
+/// eight-frame clip, so it reads as a routine rather than a twitch.
+const PLAY_MS: u32 = 1_600;
+/// Odds of a rest becoming a trick at `roam = 0`; restlessness adds to it.
+const TRICK_BASE_CHANCE: u32 = 4;
+/// Odds that poking the creature gets a trick rather than the usual delight.
+const POKE_TRICK_CHANCE: u32 = 45;
 
 pub struct Ctx<'a> {
     pub world: &'a World,
@@ -186,6 +198,10 @@ pub struct Pet {
     leave_cooldown: u32,
     /// Sticky flag for the CPU hysteresis band.
     was_annoyed: bool,
+    /// Top-left of the window the creature is standing on, as of the last tick.
+    /// The delta against the window's current position is how far it has to be
+    /// carried; `None` means it is not on a window at all. See [`Pet::ride`].
+    ride_from: Option<(i32, i32)>,
     /// Set by "Go to sleep" in the tray menu. Keeps the pet asleep regardless
     /// of the idle timer, until something explicitly rouses it.
     forced_sleep: bool,
@@ -219,6 +235,7 @@ impl Pet {
             leave_acc: 0,
             leave_cooldown: 0,
             was_annoyed: false,
+            ride_from: None,
             forced_sleep: false,
         }
     }
@@ -268,6 +285,7 @@ impl Pet {
         self.enter(State::Drag, 0);
         self.grounded = false;
         self.ledge = None;
+        self.ride_from = None;
         self.vx = 0.0;
         self.vy = 0.0;
     }
@@ -305,6 +323,24 @@ impl Pet {
         self.enter(State::Alert, ALERT_MS);
     }
 
+    /// Poked by the user: usually delighted, sometimes a whole trick.
+    ///
+    /// Clicking the creature is the most direct thing anyone does to it, and a
+    /// reaction that is identical every single time stops registering as one.
+    /// A trick needs the ground under it, so a poke taken mid-air falls back to
+    /// the plain reaction. A commanded nap outranks both.
+    pub fn poke(&mut self, rng: &mut Rng) {
+        if self.state == State::Drag || self.forced_sleep {
+            return;
+        }
+        if self.grounded && rng.chance(POKE_TRICK_CHANCE) {
+            self.vx = 0.0;
+            self.enter(State::Play, PLAY_MS);
+            return;
+        }
+        self.notice(None);
+    }
+
     /// Send the pet to sleep on request, and keep it there.
     ///
     /// The flag is the whole point. Sleep is otherwise driven by the idle
@@ -338,6 +374,7 @@ impl Pet {
         self.vy = 0.0;
         self.grounded = false;
         self.ledge = None;
+        self.ride_from = None;
         self.land_below = None;
         self.climbing = None;
         self.climb_goal = None;
@@ -345,6 +382,57 @@ impl Pet {
     }
 
     // -- per-tick ----------------------------------------------------------
+
+    /// Travel with the window underfoot.
+    ///
+    /// `where_is` reports a window's current top-left, or `None` once it is
+    /// gone. Called once per tick, before the simulation.
+    ///
+    /// Without this the creature keeps its screen coordinates while a window
+    /// slides out from under it: drag a window sideways and it is left standing
+    /// in mid-air, drag it down and the 3px support tolerance drops it. The
+    /// ledge scan cannot fix that on its own — it runs a few times a second,
+    /// which is far too coarse to follow a drag — so the window is asked
+    /// directly, every tick, and the creature is moved by the difference.
+    ///
+    /// Returns whether it is currently riding, which tells [`Self::physics`] to
+    /// trust the ledge it is holding over the scan's staler copy.
+    pub fn ride(&mut self, world: &World, where_is: impl Fn(HWND) -> Option<(i32, i32)>) -> bool {
+        // Only a grounded creature on a window rides; being carried, airborne
+        // or on a monitor floor are all "stay where you are".
+        let owner = match (self.grounded, self.state) {
+            (true, s) if s != State::Drag && s != State::Climb => {
+                self.ledge.and_then(|l| l.window())
+            }
+            _ => None,
+        };
+        let Some(owner) = owner else {
+            self.ride_from = None;
+            return false;
+        };
+        // A window whose edge the scan no longer offers has been covered by
+        // something else. Stop riding and let the usual support check drop the
+        // creature, rather than leaving it standing on a hidden title bar.
+        let Some(now) = where_is(owner).filter(|_| world.owns_ledge(owner)) else {
+            self.ride_from = None;
+            return false;
+        };
+
+        if let Some(prev) = self.ride_from {
+            let (dx, dy) = (now.0 - prev.0, now.1 - prev.1);
+            if dx != 0 || dy != 0 {
+                self.x += dx as f32;
+                self.y += dy as f32;
+                if let Some(l) = self.ledge.as_mut() {
+                    l.x0 += dx;
+                    l.x1 += dx;
+                    l.y += dy;
+                }
+            }
+        }
+        self.ride_from = Some(now);
+        true
+    }
 
     pub fn update(&mut self, dt: u32, ctx: &mut Ctx, set: &SpriteSet) {
         self.state_ms = self.state_ms.saturating_add(dt);
@@ -376,7 +464,17 @@ impl Pet {
             return;
         }
 
-        if self.grounded {
+        if self.grounded && self.ride_from.is_some() {
+            // Riding a window this tick: `ride` already confirmed the window is
+            // there and moved the creature and its ledge with it. The scan's
+            // copy of that ledge is up to a refresh interval out of date, and
+            // adopting it here would drag the creature back to where the window
+            // used to be — a stutter while dragging, and a fall the moment the
+            // window outruns the 3px support tolerance.
+            if let Some(l) = self.ledge {
+                self.y = l.y as f32;
+            }
+        } else if self.grounded {
             // The window we were standing on may have moved, closed or been
             // covered since the last scan.
             match ctx
@@ -390,6 +488,7 @@ impl Pet {
                 None => {
                     self.grounded = false;
                     self.ledge = None;
+                    self.ride_from = None;
                     self.enter(State::Fall, 0);
                 }
             }
@@ -436,11 +535,11 @@ impl Pet {
         if self.y > mon.rect.bottom as f32 + 64.0 {
             self.x = (self.x as i32).clamp(mon.work.left + 32, mon.work.right - 32) as f32;
             self.y = mon.work.bottom as f32;
-            self.land_on(Ledge {
-                x0: mon.work.left,
-                x1: mon.work.right,
-                y: mon.work.bottom,
-            });
+            self.land_on(Ledge::at(
+                mon.work.left,
+                mon.work.right,
+                mon.work.bottom,
+            ));
         }
     }
 
@@ -459,6 +558,7 @@ impl Pet {
         // set off again — the yo-yo that gate exists to stop.
         self.climb_goal = None;
         self.ledge = Some(l);
+        self.ride_from = None;
         self.enter(State::Idle, 700);
         self.confine_to_ledge();
     }
@@ -478,6 +578,7 @@ impl Pet {
                 // Step off into open air.
                 self.grounded = false;
                 self.ledge = None;
+                self.ride_from = None;
                 self.vy = 0.0;
                 self.enter(State::Fall, 0);
                 return;
@@ -601,6 +702,7 @@ impl Pet {
         self.land_below = (drop > 0.0).then_some(self.y as i32 + 8);
         self.grounded = false;
         self.ledge = None;
+        self.ride_from = None;
         self.enter(State::Fall, 0);
     }
 
@@ -614,6 +716,7 @@ impl Pet {
         self.vy = 0.0;
         self.grounded = false;
         self.ledge = None;
+        self.ride_from = None;
         self.enter(State::Climb, 0);
     }
 
@@ -759,7 +862,9 @@ impl Pet {
         if self.state == State::Fall || self.state == State::Climb {
             return;
         }
-        if self.state == State::Alert {
+        // A reaction and a trick both run to the end. Half a trick reads as the
+        // creature thinking better of it.
+        if self.state == State::Alert || self.state == State::Play {
             if self.state_ms < self.hold_ms {
                 return;
             }
@@ -1017,9 +1122,20 @@ impl Pet {
         }
     }
 
-    /// Stand, sit, or turn on the spot to look around.
+    /// Stand, sit, turn on the spot to look around — or show off.
     fn rest(&mut self, ctx: &mut Ctx) {
         let roam = ctx.cfg.roam.min(100) as u32;
+
+        // A trick, now and then, for no reason. Rolled ahead of the ordinary
+        // rests rather than as a fourth arm of them, so it keeps its own odds
+        // instead of competing with sitting down — and a restless creature
+        // shows off more than a placid one.
+        if ctx.rng.chance(TRICK_BASE_CHANCE + roam * 12 / 100) {
+            self.vx = 0.0;
+            self.enter(State::Play, PLAY_MS);
+            return;
+        }
+
         let rest_scale = 150 - roam;
         let rng = &mut *ctx.rng;
         let hold = |rng: &mut Rng, lo: i32, hi: i32| {
@@ -1197,8 +1313,231 @@ mod tests {
                 work: RECT { left: 0, top: 0, right: 1600, bottom: FLOOR_Y },
             }],
             // A single wide floor and nothing to climb.
-            vec![Ledge { x0: 0, x1: 1600, y: FLOOR_Y }],
+            vec![Ledge::at(0, 1600, FLOOR_Y)],
         )
+    }
+
+    /// A stand-in window handle. Only ever compared, never dereferenced.
+    fn fake_window(n: usize) -> HWND {
+        n as HWND
+    }
+
+    /// A desktop with one window whose title bar the pet can stand on.
+    fn world_with_window(win: HWND, x0: i32, x1: i32, y: i32) -> World {
+        World::for_test(
+            vec![Monitor {
+                rect: RECT { left: 0, top: 0, right: 1600, bottom: 1000 },
+                work: RECT { left: 0, top: 0, right: 1600, bottom: FLOOR_Y },
+            }],
+            vec![
+                Ledge::at(0, 1600, FLOOR_Y),
+                Ledge { x0, x1, y, owner: win },
+            ],
+        )
+    }
+
+    /// Standing on a window's title bar and then moving that window must carry
+    /// the creature with it. Before this, the ledge scan was the only thing
+    /// that knew a window had moved — and it runs a few times a second, so a
+    /// drag slid the window out from under a creature that kept its screen
+    /// position: left behind horizontally, and dropped vertically the moment
+    /// the window outran the 3px support tolerance.
+    #[test]
+    fn the_creature_travels_with_the_window_it_stands_on() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let cfg = Config::default();
+        let win = fake_window(1);
+        let (wx0, wy) = (400, 500);
+
+        let mut world = world_with_window(win, wx0, wx0 + 600, wy);
+        let mut pet = Pet::new(700.0, wy as f32);
+        pet.set_body_width(96, Kind::Pal.body_half_frac());
+        let mut rng = Rng::with_seed(3);
+
+        // Land it on the window.
+        for _ in 0..8 {
+            let mut ctx = Ctx {
+                world: &world,
+                cursor: (700, wy),
+                cpu_load: 0.0,
+                idle_ms: 0,
+                cfg: &cfg,
+                rng: &mut rng,
+            };
+            pet.update(25, &mut ctx, &set);
+        }
+        assert!(pet.grounded, "should be standing on the window");
+        assert_eq!(
+            pet.ledge.and_then(|l| l.window()),
+            Some(win),
+            "should know which window it is on"
+        );
+
+        // Drag the window: right and down, faster per tick than the support
+        // tolerance, which is the case that used to drop it.
+        let (start_x, start_y) = (pet.x, pet.y);
+        let (mut wx, mut wyy) = (wx0, wy);
+        for _ in 0..10 {
+            wx += 17;
+            wyy += 9;
+            assert!(pet.ride(&world, |h| if std::ptr::eq(h, win) {
+                Some((wx, wyy))
+            } else {
+                None
+            }));
+            let mut ctx = Ctx {
+                world: &world,
+                cursor: (700, wy),
+                cpu_load: 0.0,
+                idle_ms: 0,
+                cfg: &cfg,
+                rng: &mut rng,
+            };
+            pet.update(25, &mut ctx, &set);
+            assert!(pet.grounded, "must not fall off a window being dragged");
+        }
+
+        // Nine ticks of movement after the first, which only sets the anchor.
+        assert_eq!(pet.x - start_x, 17.0 * 9.0, "carried horizontally");
+        assert_eq!(pet.y - start_y, 9.0 * 9.0, "carried vertically");
+
+        // And once the window is gone, the ride ends and it falls.
+        assert!(!pet.ride(&world, |_| None));
+        world = World::for_test(
+            vec![Monitor {
+                rect: RECT { left: 0, top: 0, right: 1600, bottom: 1000 },
+                work: RECT { left: 0, top: 0, right: 1600, bottom: FLOOR_Y },
+            }],
+            vec![Ledge::at(0, 1600, FLOOR_Y)],
+        );
+        let mut ctx = Ctx {
+            world: &world,
+            cursor: (700, wy),
+            cpu_load: 0.0,
+            idle_ms: 0,
+            cfg: &cfg,
+            rng: &mut rng,
+        };
+        pet.update(25, &mut ctx, &set);
+        assert!(!pet.grounded, "a closed window is not something to stand on");
+    }
+
+    /// A window covered by another loses its ledge in the scan. The creature
+    /// must not keep riding a title bar it is no longer standing on — that
+    /// would leave it hovering over whatever is now in front.
+    #[test]
+    fn riding_stops_when_the_window_is_covered() {
+        let win = fake_window(2);
+        let mut pet = Pet::new(700.0, 500.0);
+        pet.grounded = true;
+        pet.ledge = Some(Ledge { x0: 400, x1: 1000, y: 500, owner: win });
+
+        // The scan still lists it: riding works.
+        let with = world_with_window(win, 400, 1000, 500);
+        assert!(pet.ride(&with, |_| Some((400, 500))));
+
+        // Covered — the scan no longer offers that window's edge.
+        let without = world();
+        assert!(
+            !pet.ride(&without, |_| Some((400, 500))),
+            "a covered window must not be ridden"
+        );
+    }
+
+    /// Only a creature standing on a window rides. Being carried by the user,
+    /// or standing on the taskbar, must not be perturbed by anything a window
+    /// does.
+    #[test]
+    fn nothing_but_a_window_underfoot_is_ridden() {
+        let win = fake_window(3);
+        let w = world_with_window(win, 400, 1000, 500);
+
+        // On the monitor floor: no owner, no ride.
+        let mut floor_pet = Pet::new(700.0, FLOOR_Y as f32);
+        floor_pet.grounded = true;
+        floor_pet.ledge = Some(Ledge::at(0, 1600, FLOOR_Y));
+        assert!(!floor_pet.ride(&w, |_| Some((0, 0))));
+
+        // Held by the user, over a window that is moving.
+        let mut held = Pet::new(700.0, 500.0);
+        held.grounded = true;
+        held.ledge = Some(Ledge { x0: 400, x1: 1000, y: 500, owner: win });
+        held.enter(State::Drag, 0);
+        assert!(!held.ride(&w, |_| Some((999, 999))));
+
+        // Airborne.
+        let mut falling = Pet::new(700.0, 500.0);
+        falling.ledge = Some(Ledge { x0: 400, x1: 1000, y: 500, owner: win });
+        falling.grounded = false;
+        assert!(!falling.ride(&w, |_| Some((999, 999))));
+    }
+
+    /// Poking should be worth doing. The reaction is not always the same one,
+    /// and the trick needs the ground under it — poking a falling creature is
+    /// no reason for it to start dancing in mid-air.
+    #[test]
+    fn poking_the_creature_sometimes_gets_a_trick() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let cfg = Config::default();
+
+        let mut tricks = 0;
+        for seed in 0..60u64 {
+            let (mut pet, mut rng) = grounded_pet(&set, &cfg);
+            let _ = &mut rng;
+            let mut r = Rng::with_seed(seed);
+            pet.poke(&mut r);
+            match pet.state {
+                State::Play => tricks += 1,
+                State::Alert => {}
+                other => panic!("a poke produced {other:?}"),
+            }
+        }
+        // Both outcomes have to actually happen; the exact split is a feel.
+        assert!(tricks > 5, "poking never got a trick ({tricks}/60)");
+        assert!(tricks < 55, "poking always got a trick ({tricks}/60)");
+
+        // Airborne: the plain reaction, never a trick.
+        for seed in 0..40u64 {
+            let mut pet = Pet::new(700.0, 300.0);
+            pet.grounded = false;
+            pet.poke(&mut Rng::with_seed(seed));
+            assert_ne!(pet.state, State::Play, "tricks need the ground");
+        }
+
+        // A commanded nap outranks a poke, as it does every other reaction.
+        let (mut pet, _) = grounded_pet(&set, &cfg);
+        pet.force_sleep();
+        pet.poke(&mut Rng::with_seed(1));
+        assert!(pet.is_sleeping(), "a poke must not end a commanded nap");
+    }
+
+    /// A trick runs to the end. Half of one reads as the creature thinking
+    /// better of it, and the state is entered from `rest`, which is reached
+    /// again the moment the hold expires.
+    #[test]
+    fn a_trick_is_not_interrupted_half_way() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let cfg = Config::default();
+        let (mut pet, mut rng) = grounded_pet(&set, &cfg);
+        let w = world();
+
+        pet.enter(State::Play, PLAY_MS);
+        let mut elapsed = 0u32;
+        while elapsed < PLAY_MS - 50 {
+            let mut ctx = Ctx {
+                world: &w,
+                cursor: (800, FLOOR_Y),
+                cpu_load: 0.0,
+                idle_ms: 0,
+                cfg: &cfg,
+                rng: &mut rng,
+            };
+            pet.update(25, &mut ctx, &set);
+            elapsed += 25;
+            assert_eq!(pet.state, State::Play, "trick cut short at {elapsed}ms");
+        }
+        // It stands still while doing it, rather than drifting off the spot.
+        assert_eq!(pet.vx, 0.0, "a trick is performed on the spot");
     }
 
     /// Drop the pet onto the floor and settle it.
@@ -1316,9 +1655,9 @@ mod tests {
                 work: RECT { left: 0, top: 0, right: 1600, bottom: FLOOR_Y },
             }],
             vec![
-                Ledge { x0: 0, x1: 1600, y: FLOOR_Y },
-                Ledge { x0: 200, x1: 900, y: 700 },
-                Ledge { x0: 300, x1: 1000, y: 460 },
+                Ledge::at(0, 1600, FLOOR_Y),
+                Ledge::at(200, 900, 700),
+                Ledge::at(300, 1000, 460),
             ],
         )
     }
@@ -1422,21 +1761,21 @@ mod tests {
     #[test]
     fn leaps_land_on_their_target() {
         // Up onto the middle ledge from the floor.
-        let up = Ledge { x0: 200, x1: 900, y: 700 };
+        let up = Ledge::at(200, 900, 700);
         let (apex, secs, dist, landed_y, landed_x) = trace_leap(960.0, 550.0, up);
         println!("up   200px: apex {apex:.0}px  {secs:.2}s  {dist:.0}px across  -> y={landed_y} x={landed_x}");
         assert_eq!(landed_y, 700, "should have landed on the target ledge");
         assert!(apex > 260.0, "must clear the target, only rose {apex:.0}px");
 
         // Down from the top ledge onto the middle one.
-        let down = Ledge { x0: 200, x1: 900, y: 700 };
+        let down = Ledge::at(200, 900, 700);
         let (apex, secs, dist, landed_y, landed_x) = trace_leap(460.0, 550.0, down);
         println!("down 240px: apex {apex:.0}px  {secs:.2}s  {dist:.0}px across  -> y={landed_y} x={landed_x}");
         assert_eq!(landed_y, 700, "should have dropped onto the target ledge");
         assert!(apex < 40.0, "a hop down should barely rise, went up {apex:.0}px");
 
         // Sideways as well as down: it must travel, not drop straight.
-        let far = Ledge { x0: 200, x1: 900, y: 700 };
+        let far = Ledge::at(200, 900, 700);
         let (_, _, dist, landed_y, _) = trace_leap(460.0, 950.0, far);
         println!("down + across from x=950: {dist:.0}px across -> y={landed_y}");
         assert_eq!(landed_y, 700);
@@ -1453,8 +1792,8 @@ mod tests {
                 work: RECT { left: 0, top: 0, right: 1920, bottom: 1030 },
             }],
             vec![
-                Ledge { x0: 0, x1: 1920, y: 1030 },
-                Ledge { x0: 398, x1: 1806, y: 323 },
+                Ledge::at(0, 1920, 1030),
+                Ledge::at(398, 1806, 323),
             ],
         );
         w.walls = vec![
@@ -1524,8 +1863,8 @@ mod tests {
                 work: RECT { left: 0, top: 0, right: 1920, bottom: 1035 },
             }],
             vec![
-                Ledge { x0: 0, x1: 1920, y: 1035 },   // taskbar
-                Ledge { x0: 477, x1: 1880, y: 476 },  // the window's title bar
+                Ledge::at(0, 1920, 1035),   // taskbar
+                Ledge::at(477, 1880, 476),  // the window's title bar
             ],
         );
         w.walls = vec![
@@ -1938,7 +2277,7 @@ mod tests {
                 rect: RECT { left: 0, top: 0, right: 1920, bottom: 1080 },
                 work: RECT { left: 0, top: 0, right: 1920, bottom: 1035 },
             }],
-            vec![Ledge { x0: 0, x1: 1920, y: 1035 }],
+            vec![Ledge::at(0, 1920, 1035)],
         );
 
         let mut moves: Vec<f32> = Vec::new();
@@ -1994,7 +2333,7 @@ mod tests {
                 rect: RECT { left: 0, top: 0, right: 1920, bottom: 1080 },
                 work: RECT { left: 0, top: 0, right: 1920, bottom: 1035 },
             }],
-            vec![Ledge { x0: 0, x1: 1920, y: 1035 }],
+            vec![Ledge::at(0, 1920, 1035)],
         );
         let mut all: Vec<f32> = Vec::new();
         let mut sprints = 0;
@@ -2064,8 +2403,8 @@ mod tests {
                         work: RECT { left: 0, top: 0, right: 1920, bottom: 1035 },
                     }],
                     vec![
-                        Ledge { x0: 0, x1: 1920, y: 1035 },
-                        Ledge { x0: 40, x1: 40 + width, y: 880 },
+                        Ledge::at(0, 1920, 1035),
+                        Ledge::at(40, 40 + width, 880),
                     ],
                 );
 
@@ -2133,8 +2472,8 @@ mod tests {
                 work: RECT { left: 0, top: 0, right: 1920, bottom: 1035 },
             }],
             vec![
-                Ledge { x0: 0, x1: 1920, y: 1035 },
-                Ledge { x0: 0, x1: 1920, y: 0 },
+                Ledge::at(0, 1920, 1035),
+                Ledge::at(0, 1920, 0),
             ],
         );
         w.walls = vec![
@@ -2215,8 +2554,8 @@ mod tests {
                             let mut w = World::for_test(
                                 vec![Monitor { rect: mon, work }],
                                 vec![
-                                    Ledge { x0: origin, x1: origin + sw, y: floor },
-                                    Ledge { x0: wl, x1: wr, y: inset.min(60) },
+                                    Ledge::at(origin, origin + sw, floor),
+                                    Ledge::at(wl, wr, inset.min(60)),
                                 ],
                             );
                             w.walls = vec![

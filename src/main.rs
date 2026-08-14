@@ -75,6 +75,10 @@ const CLICK_SLOP_PX: i32 = 4;
 const CLICK_MAX_MS: u64 = 400;
 /// Alpha below which a pixel counts as click-through.
 const HIT_ALPHA: u8 = 40;
+/// How often the topmost claim is renewed. Frequent enough that being covered
+/// is a blink rather than a disappearance, rare enough to be free — the call is
+/// a no-op when the pet is already on top.
+const RAISE_INTERVAL_MS: u64 = 1_000;
 
 /// Set once the window exists, so the WinEvent callback can post to it.
 static APP_HWND: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
@@ -110,6 +114,8 @@ struct App {
     last_key: Option<(i32, i32, u32, bool, u32)>,
     drag: Option<Drag>,
     last_notice: u64,
+    /// When to next renew the topmost claim. See [`App::raise`].
+    next_raise_ms: u64,
     /// Where the sprites came from, for the About box.
     sprite_source: String,
 }
@@ -155,6 +161,7 @@ impl App {
             last_key: None,
             drag: None,
             last_notice: 0,
+            next_raise_ms: 0,
             sprite_source,
         }
     }
@@ -175,6 +182,20 @@ impl App {
         // Skip the window scan entirely while asleep; nothing will move the pet.
         if self.cfg.walk_on_windows && self.pet.state != State::Sleep {
             self.world.refresh(now, WORLD_SCAN_MS, false);
+        }
+
+        // Travel with the window underfoot. Asked of the window itself rather
+        // than of the scan, because a drag moves faster than the scan refreshes.
+        self.pet.ride(&self.world, |hwnd| {
+            platforms::standable_rect(hwnd).map(|rc| (rc.left, rc.top))
+        });
+
+        // Other applications put their own topmost windows up as they open, and
+        // whoever went topmost last wins. Being covered is the one failure a
+        // desktop pet cannot recover from on its own, so the claim is renewed.
+        if now >= self.next_raise_ms {
+            self.next_raise_ms = now + RAISE_INTERVAL_MS;
+            self.raise();
         }
 
         if let Some(text) = self.sched.poll(now, &self.cfg) {
@@ -198,6 +219,31 @@ impl App {
         self.present();
 
         self.pet.next_wake_ms(&self.set).min(MAX_IDLE_WAIT_MS)
+    }
+
+    /// Reassert the topmost claim without moving, resizing or focusing.
+    ///
+    /// `WS_EX_TOPMOST` is not a ranking, it is a band: within it, the window
+    /// that most recently asked sits highest. So every application that opens
+    /// its own always-on-top window — installers, media players, notification
+    /// popups, some launchers — silently ends up above the creature and it is
+    /// never seen again. `UpdateLayeredWindow` presents pixels but does not
+    /// touch z-order, so nothing in the normal frame path recovers from it.
+    ///
+    /// `SWP_NOACTIVATE` matters as much as the flags: the pet must never steal
+    /// focus, and this runs on a timer.
+    fn raise(&self) {
+        unsafe {
+            SetWindowPos(
+                self.hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
     }
 
     /// Blit and push the current frame, skipping the work if nothing moved.
@@ -273,13 +319,21 @@ impl App {
         let held = now_ms().saturating_sub(d.start_ms);
         if d.travelled <= CLICK_SLOP_PX && held <= CLICK_MAX_MS {
             // A poke rather than a drag: react in place instead of falling.
-            self.pet.notice(None);
+            self.pet.poke(&mut self.rng);
         }
     }
 
     /// A top-level window just appeared.
     fn on_new_window(&mut self, hwnd: HWND) {
-        if !self.cfg.react_to_new_apps || hwnd.is_null() {
+        if hwnd.is_null() {
+            return;
+        }
+        // A window opening is the moment the pet gets buried, so renew the
+        // claim here regardless of whether it reacts to the window — the
+        // reaction is a preference, staying visible is not.
+        self.next_raise_ms = now_ms() + RAISE_INTERVAL_MS;
+        self.raise();
+        if !self.cfg.react_to_new_apps {
             return;
         }
         let now = now_ms();
@@ -829,6 +883,10 @@ unsafe extern "system" fn win_event_proc(
 // ---------------------------------------------------------------------------
 
 fn main() {
+    // Before anything that could fail, so a panic during startup is reported
+    // rather than silently aborting a windowed process with no console.
+    win::install_panic_reporter(Config::dir().join("crash.log"));
+
     unsafe {
         // Physical pixels everywhere, so window rects and cursor positions all
         // agree regardless of per-monitor scaling.

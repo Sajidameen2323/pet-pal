@@ -352,17 +352,17 @@ mod tests {
                 .unwrap_or_else(|e| panic!("guide toml block {i} is not valid TOML: {e}"));
         }
 
-        // The beginner layout: an 8x6 sheet, 48 squares, described cell by cell
+        // The beginner layout: an 8x7 sheet, 56 squares, described cell by cell
         // in the prompt users paste into an image generator. The manifest and
         // that description have to agree, and the only way they can is if the
-        // 48 squares are partitioned — every square claimed, by exactly one
+        // 56 squares are partitioned — every square claimed, by exactly one
         // animation. A gap means the user drew a pose nothing plays; an overlap
         // means two animations show the same art.
         let simple = blocks
             .iter()
             .find(|b| b.contains("frame_width = 64"))
-            .expect("guide should print the 8x6 beginner manifest");
-        let set = load_manifest(simple, 64, 8, 6, "simple");
+            .expect("guide should print the 8x7 beginner manifest");
+        let set = load_manifest(simple, 64, 8, 7, "simple");
 
         let expected = [
             (Anim::Idle, 8),
@@ -375,6 +375,7 @@ mod tests {
             (Anim::Alert, 4),
             (Anim::Sit, 2),
             (Anim::Drag, 2),
+            (Anim::Play, 8),
         ];
         assert_eq!(expected.len(), ANIM_COUNT, "every animation must be listed");
         let mut claimed: Vec<u16> = Vec::new();
@@ -382,7 +383,7 @@ mod tests {
             assert_eq!(
                 set.frame_count(a),
                 n,
-                "{a:?} should use {n} squares in the 8x6 layout"
+                "{a:?} should use {n} squares in the 8x7 layout"
             );
             claimed.extend_from_slice(&set.clip(a).idx);
         }
@@ -395,19 +396,19 @@ mod tests {
         assert_eq!(claimed.len(), unique.len(), "two animations share a square");
         assert_eq!(
             unique,
-            (0..48u16).collect::<Vec<_>>(),
-            "the manifest must claim all 48 squares of the 8x6 sheet exactly once"
+            (0..56u16).collect::<Vec<_>>(),
+            "the manifest must claim all 56 squares of the 8x7 sheet exactly once"
         );
 
         // The built-in layout, which has to match what export actually writes.
-        // Matched on the run row, which only the 52-frame layout spells out —
-        // the 8x6 one uses `row = 2`. Matching on something both contain (both
+        // Matched on the run row, which only the 60-frame layout spells out —
+        // the 8x7 one uses `row = 2`. Matching on something both contain (both
         // have a `frames = [44,` line) silently tests the wrong block.
         let full = blocks
             .iter()
             .find(|b| b.contains("frames = [16, 17, 18"))
-            .expect("guide should print the 52-frame built-in manifest");
-        let set = load_manifest(full, 32, 8, 7, "full");
+            .expect("guide should print the 60-frame built-in manifest");
+        let set = load_manifest(full, 32, 8, 8, "full");
         let reference = builtin(Kind::Pal, &Kind::Pal.palette());
         for a in Anim::ALL {
             assert_eq!(
@@ -504,7 +505,7 @@ mod tests {
 
             // A pose table that forgot to vary is the other half-finish: eight
             // identical cells still animate, they just do not move.
-            for a in [Anim::Walk, Anim::Run, Anim::Climb] {
+            for a in [Anim::Walk, Anim::Run, Anim::Climb, Anim::Play] {
                 let first = &set.frame(a, 0).px;
                 assert!(
                     (1..set.frame_count(a)).any(|i| &set.frame(a, i).px != first),
@@ -517,6 +518,51 @@ mod tests {
             assert!(
                 (0..n).any(|i| set.frame(Anim::Climb, i).px != set.frame(Anim::Walk, i).px),
                 "{name} climb is the walk cycle"
+            );
+
+            // Nor may a trick be the alert reaction relabelled — that is what a
+            // sheet *without* a trick falls back to, so a built-in doing the
+            // same has effectively not got one.
+            let n = set.frame_count(Anim::Play).min(set.frame_count(Anim::Alert));
+            assert!(
+                (0..n).any(|i| set.frame(Anim::Play, i).px != set.frame(Anim::Alert, i).px),
+                "{name} play is the alert animation"
+            );
+
+            // The trick leaves the ground in the middle and is back on it at
+            // both ends. Measured against how *this* creature stands rather
+            // than against the bottom row of the cell: Vader and the monkey
+            // draw their feet a pixel or two clear of it in every pose, so
+            // "touches the last row" would be a claim about them and not about
+            // the animation.
+            let floor_of = |a: Anim, i: usize| -> u32 {
+                let f = set.frame(a, i);
+                let w = set.w as usize;
+                (0..set.h)
+                    .rev()
+                    .find(|&y| {
+                        f.px[y as usize * w..(y as usize + 1) * w]
+                            .iter()
+                            .any(|&p| p >> 24 > 24)
+                    })
+                    .unwrap_or(0)
+            };
+            let stand = floor_of(Anim::Idle, 0);
+            let n = set.frame_count(Anim::Play);
+            for i in [0, n - 1] {
+                assert!(
+                    floor_of(Anim::Play, i) + 3 >= stand,
+                    "{name} play[{i}] should have its feet down, like idle does"
+                );
+            }
+            // Strictly higher than the resting pose, not higher by some margin:
+            // a creature whose limbs hang when splayed keeps its lowest pixel
+            // almost where it was even at the top of a clear hop. The mouse
+            // gains one pixel here where Pal gains four, and both read fine.
+            let rest = floor_of(Anim::Play, 0);
+            assert!(
+                (1..n - 1).any(|i| floor_of(Anim::Play, i) < rest),
+                "{name} play never leaves the ground"
             );
         }
     }
@@ -552,6 +598,82 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 0, "no sheets found under {}", root.display());
+    }
+
+    /// A sheet with cells far larger than the editor's preview box has to load
+    /// and preview like any other. Big art is the ordinary case for a sheet out
+    /// of an image generator, and it used to be the case that killed the
+    /// process: the preview box is a fixed 288x150, and nothing scaled a 256px
+    /// cell down to fit it.
+    #[test]
+    fn a_sheet_with_cells_larger_than_the_preview_box_works_end_to_end() {
+        for cell in [128u32, 192, 256, 384] {
+            let (cols, rows) = (4u32, 2u32);
+            let manifest = format!(
+                "image = \"creature.png\"\n\
+                 frame_width = {cell}\nframe_height = {cell}\n\
+                 [anims.idle]\nframes = [0, 1, 2, 3]\nframe_ms = 200\n\
+                 [anims.walk]\nframes = [4, 5, 6, 7]\nframe_ms = 100\n"
+            );
+            let tag = format!("big-{cell}");
+            let set = load_manifest(&manifest, cell, cols, rows, &tag);
+            assert_eq!(set.w, cell);
+            assert_eq!(set.frames.len(), (cols * rows) as usize);
+            assert_eq!(set.frame_count(Anim::Idle), 4);
+
+            // And the editor can composite every one of those cells into its
+            // preview box without going outside the buffer.
+            let px: Vec<u32> = vec![0xFFFF_FFFF; (cols * cell * rows * cell) as usize];
+            for n in 0..(cols * rows) as u16 {
+                let buf = crate::addsprite::compose_play(
+                    &px,
+                    (cols * cell) as i32,
+                    (rows * cell) as i32,
+                    n,
+                    cols as i32,
+                    cell as i32,
+                    cell as i32,
+                    288,
+                    150,
+                );
+                assert_eq!(buf.len(), 288 * 150, "{cell}px cell, frame {n}");
+            }
+        }
+    }
+
+    /// Every sheet written before `play` existed lacks one, and there are
+    /// already sheets in the wild. Falling back to `idle` would mean the
+    /// creature announced a trick and then stood perfectly still; `alert` is at
+    /// least a pleased, moving reaction, which is the nearest thing such a
+    /// sheet actually contains.
+    #[test]
+    fn a_sheet_without_a_trick_borrows_its_alert() {
+        let manifest = "\
+image = \"creature.png\"
+frame_width = 32
+frame_height = 32
+
+[anims.idle]
+frames = [0]
+frame_ms = 200
+
+[anims.alert]
+frames = [1, 2, 3]
+frame_ms = 150
+";
+        let set = load_manifest(manifest, 32, 4, 1, "no-play");
+        assert_eq!(
+            set.clip(Anim::Play).idx,
+            vec![1, 2, 3],
+            "play should borrow the alert frames, not idle's"
+        );
+        assert_eq!(set.clip(Anim::Play).frame_ms, 150, "and its timing");
+
+        // A sheet that *does* declare one keeps its own.
+        let with = format!("{manifest}\n[anims.play]\nframes = [3, 2]\nframe_ms = 90\n");
+        let set = load_manifest(&with, 32, 4, 1, "with-play");
+        assert_eq!(set.clip(Anim::Play).idx, vec![3, 2]);
+        assert_eq!(set.clip(Anim::Play).frame_ms, 90);
     }
 
     /// An exported sheet must load back as the same animations — that round
