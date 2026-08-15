@@ -135,8 +135,10 @@ const MOVE_STEP_MS: u32 = 25;
 /// How long a trick is held. Long enough for a couple of loops of the built-in
 /// eight-frame clip, so it reads as a routine rather than a twitch.
 const PLAY_MS: u32 = 1_600;
-/// Odds of a rest becoming a trick at `roam = 0`; restlessness adds to it.
-const TRICK_BASE_CHANCE: u32 = 4;
+/// Odds that any given decision is a trick at `roam = 0`, as a percentage.
+const TRICK_BASE_CHANCE: u32 = 18;
+/// Added to that at `roam = 100`, so a restless creature shows off more.
+const TRICK_ROAM_BONUS: u32 = 14;
 /// Odds that poking the creature gets a trick rather than the usual delight.
 const POKE_TRICK_CHANCE: u32 = 45;
 
@@ -1054,6 +1056,23 @@ impl Pet {
 
         let roam = ctx.cfg.roam.min(100) as u32;
 
+        // A trick, now and then, for no reason at all.
+        //
+        // Rolled on every decision, and deliberately *not* inside `rest`. A rest
+        // only happens when the creature has decided against moving, which at
+        // high roam is almost never — so putting the roll there made showing off
+        // rarer the more restless the creature was, which is backwards, and the
+        // opposite of what the Roam menu says it does. Measured before the move:
+        // one trick every 111s at roam 45 but one every *2100s* at roam 95.
+        //
+        // Out here the odds rise with roam and so does the rate of decisions, so
+        // the two compound in the direction the menu promises.
+        if ctx.rng.chance(TRICK_BASE_CHANCE + roam * TRICK_ROAM_BONUS / 100) {
+            self.vx = 0.0;
+            self.enter(State::Play, PLAY_MS);
+            return;
+        }
+
         // Hopping and climbing are handled by `consider_leaving`, on its own
         // clock. What is left here is stepping off an edge, which shares the
         // same settle gate: otherwise the creature lands, pauses, and walks
@@ -1122,20 +1141,12 @@ impl Pet {
         }
     }
 
-    /// Stand, sit, turn on the spot to look around — or show off.
+    /// Stand, sit, or turn on the spot to look around.
+    ///
+    /// Showing off is not one of the options here — see [`Self::wander`], which
+    /// rolls for it before the decision to move or settle is even taken.
     fn rest(&mut self, ctx: &mut Ctx) {
         let roam = ctx.cfg.roam.min(100) as u32;
-
-        // A trick, now and then, for no reason. Rolled ahead of the ordinary
-        // rests rather than as a fourth arm of them, so it keeps its own odds
-        // instead of competing with sitting down — and a restless creature
-        // shows off more than a placid one.
-        if ctx.rng.chance(TRICK_BASE_CHANCE + roam * 12 / 100) {
-            self.vx = 0.0;
-            self.enter(State::Play, PLAY_MS);
-            return;
-        }
-
         let rest_scale = 150 - roam;
         let rng = &mut *ctx.rng;
         let hold = |rng: &mut Rng, lo: i32, hi: i32| {
@@ -2317,6 +2328,129 @@ mod tests {
             "{:.0}% of movements travel under 100px — the creature is pacing",
             short * 100.0
         );
+    }
+
+    /// Count tricks over ten simulated minutes per seed, at a given roam.
+    fn tricks_per_minute(set: &SpriteSet, roam: u8) -> f32 {
+        let w = World::for_test(
+            vec![Monitor {
+                rect: RECT { left: 0, top: 0, right: 1920, bottom: 1080 },
+                work: RECT { left: 0, top: 0, right: 1920, bottom: 1035 },
+            }],
+            vec![Ledge::at(0, 1920, 1035)],
+        );
+        let mut cfg = Config::default();
+        cfg.roam = roam;
+        cfg.chase_cursor = false;
+        cfg.sleep_after_idle_secs = 86_400;
+        cfg.cpu_annoy_percent = 100;
+
+        let (mut tricks, mut ticks) = (0u32, 0u32);
+        for seed in [1u64, 2, 3, 17, 44, 61, 90] {
+            let (mut pet, mut rng) = settle_on_seeded(set, &cfg, &w, 960.0, 1000.0, seed);
+            let mut prev = pet.state;
+            for _ in 0..24_000 {
+                let mut ctx = Ctx {
+                    world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
+                    idle_ms: 0, cfg: &cfg, rng: &mut rng,
+                };
+                pet.update(25, &mut ctx, set);
+                if pet.state == State::Play && prev != State::Play {
+                    tricks += 1;
+                }
+                prev = pet.state;
+                ticks += 1;
+            }
+        }
+        tricks as f32 / (ticks as f32 * 0.025 / 60.0)
+    }
+
+    /// A trick nobody ever sees is a trick that is not there.
+    ///
+    /// This is the test that would have caught the original placement. The roll
+    /// lived inside `rest`, which only runs when the creature has decided
+    /// *against* moving — so the more restless it was, the less it showed off.
+    /// At roam 95 that worked out to one trick every 35 minutes, while the menu
+    /// cheerfully implied the opposite. Nothing about the code looked wrong; it
+    /// only showed up when counted.
+    #[test]
+    fn the_creature_shows_off_often_enough_to_be_seen() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+
+        let default_rate = tricks_per_minute(&set, Config::default().roam);
+        assert!(
+            default_rate >= 1.5,
+            "only {default_rate:.2} tricks a minute at the default roam — too rare to notice"
+        );
+        assert!(
+            default_rate <= 8.0,
+            "{default_rate:.2} tricks a minute is showing off constantly"
+        );
+
+        // And it must not fall away at the ends of the dial. Being busier at
+        // high roam legitimately costs some tricks -- the creature is off
+        // sprinting and hopping -- but not an order of magnitude of them.
+        for roam in [0u8, 5, 25, 70, 95, 100] {
+            let rate = tricks_per_minute(&set, roam);
+            assert!(
+                rate >= default_rate / 3.0,
+                "at roam {roam} the trick rate collapses to {rate:.2}/min \
+                 against {default_rate:.2}/min at the default"
+            );
+        }
+    }
+
+    /// How often does a trick actually happen, and how much of the time is the
+    /// creature doing one? `cargo test -- --ignored --nocapture trick_metric`.
+    #[test]
+    #[ignore]
+    fn trick_metric() {
+        let set = sprites::builtin(Kind::Pal, &Palette::default());
+        let w = World::for_test(
+            vec![Monitor {
+                rect: RECT { left: 0, top: 0, right: 1920, bottom: 1080 },
+                work: RECT { left: 0, top: 0, right: 1920, bottom: 1035 },
+            }],
+            vec![Ledge::at(0, 1920, 1035)],
+        );
+
+        println!("{:>5}  {:>12}  {:>10}  {:>9}", "roam", "gap between", "per minute", "% of time");
+        for roam in [5u8, 25, 45, 70, 95] {
+            let mut cfg = Config::default();
+            cfg.roam = roam;
+            cfg.chase_cursor = false;
+            cfg.sleep_after_idle_secs = 86_400;
+            cfg.cpu_annoy_percent = 100;
+
+            let (mut tricks, mut playing_ticks, mut ticks) = (0u32, 0u32, 0u32);
+            for seed in [1u64, 2, 3, 17, 44, 61, 90] {
+                let (mut pet, mut rng) = settle_on_seeded(&set, &cfg, &w, 960.0, 1000.0, seed);
+                let mut prev = pet.state;
+                // 24_000 ticks of 25ms = 10 simulated minutes per seed.
+                for _ in 0..24_000 {
+                    let mut ctx = Ctx {
+                        world: &w, cursor: (10_000, 10_000), cpu_load: 0.0,
+                        idle_ms: 0, cfg: &cfg, rng: &mut rng,
+                    };
+                    pet.update(25, &mut ctx, &set);
+                    if pet.state == State::Play {
+                        playing_ticks += 1;
+                        if prev != State::Play {
+                            tricks += 1;
+                        }
+                    }
+                    prev = pet.state;
+                    ticks += 1;
+                }
+            }
+            let minutes = ticks as f32 * 0.025 / 60.0;
+            println!(
+                "{roam:>5}  {:>10.0}s  {:>10.2}  {:>8.1}%",
+                minutes * 60.0 / tricks.max(1) as f32,
+                tricks as f32 / minutes,
+                playing_ticks as f32 / ticks as f32 * 100.0,
+            );
+        }
     }
 
     /// How far does one walk actually get? `cargo test -- --ignored --nocapture pacing_metric`.

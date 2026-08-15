@@ -489,7 +489,7 @@ or a trick and then stood perfectly still reads as broken.
 | `alert` | Reminders, an app opening, and clicking the pet. |
 | `sit` | Resting. Alternates with `idle`; **Roam** sets how often. |
 | `climb` | Going up the side of a window too tall to jump onto. |
-| `play` | A trick, done for its own sake. Sometimes when you click it, sometimes off its own bat; **Roam** sets how often. |
+| `play` | A trick, done for its own sake — every 20 seconds or so, and about half the times you click it. |
 
 Animations loop, and switching animation restarts at the first picture.
 
