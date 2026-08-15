@@ -1934,10 +1934,22 @@ const PROMPT_COPIED: &str = "Prompt copied.\r\n\r\n\
      in.";
 
 fn ai_prompt() -> Option<String> {
-    let guide = crate::config::SPRITE_GUIDE;
+    extract_prompt(crate::config::SPRITE_GUIDE)
+}
+
+/// Pull the fenced prompt out of the guide, as CRLF for the clipboard.
+///
+/// Normalises to LF before rebuilding the endings, because the guide arrives
+/// with whatever line endings git handed out: LF in the repository, CRLF on a
+/// Windows clone, which is the default (`core.autocrlf=true`). Replacing `\n`
+/// on text that already used CRLF produced `\r\r\n` on every line and left a
+/// stray `\r` on the last one — so the prompt everybody pastes into a generator
+/// was subtly mangled for anyone who had cloned rather than downloaded.
+fn extract_prompt(guide: &str) -> Option<String> {
     let start = guide.find("Generate ONE single image")?;
     let end = guide[start..].find("\n```")? + start;
-    Some(guide[start..end].replace('\n', "\r\n"))
+    let body = guide[start..end].replace("\r\n", "\n");
+    Some(body.trim_end().replace('\n', "\r\n"))
 }
 
 fn copy_prompt(ed: &Editor) {
@@ -2641,6 +2653,32 @@ mod tests {
         ] {
             assert!(low.contains(word), "prompt does not ask for {word:?}");
         }
+    }
+
+    /// The guide is checked out with LF in the repository and CRLF on a Windows
+    /// clone, which is git's default there. The prompt on the clipboard must not
+    /// depend on which: replacing `\n` in text that already used CRLF gave
+    /// `\r\r\n` on every line and a stray `\r` at the end, so everyone who
+    /// cloned rather than downloaded pasted a mangled prompt into their
+    /// generator — and never had any reason to suspect it.
+    #[test]
+    fn the_prompt_is_the_same_whichever_line_endings_the_guide_has() {
+        let lf = crate::config::SPRITE_GUIDE.replace("\r\n", "\n");
+        let crlf = lf.replace('\n', "\r\n");
+
+        let from_lf = extract_prompt(&lf).expect("prompt in the LF guide");
+        let from_crlf = extract_prompt(&crlf).expect("prompt in the CRLF guide");
+        assert_eq!(from_lf, from_crlf, "line endings changed the prompt");
+
+        // Exactly one CR per LF, and none stranded on their own.
+        assert_eq!(
+            from_lf.matches('\r').count(),
+            from_lf.matches('\n').count(),
+            "unbalanced carriage returns"
+        );
+        assert!(!from_lf.contains("\r\r"), "doubled carriage returns");
+        assert!(from_lf.ends_with("shadows."), "trailing newline not trimmed");
+        assert!(from_lf.starts_with("Generate ONE single image"));
     }
 
     /// The box that appears after copying describes the layout in prose; the
